@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transform-graph"
+version = "0.1.0"
+description = "Spatial transformations for robotics and computer vision."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "Vistralis Labs", email = "vistralis.labs@gmail.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Robotics",
+]
+dependencies = [
+    "numpy>=2.0.0",
+    "numpy-quaternion",
+    "networkx",
+    "scipy",
+]
+
+[project.optional-dependencies]
+viz = [
+    "plotly>=5.0.0",
+]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
