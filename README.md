@@ -31,31 +31,120 @@ import numpy as np
 # Translation: Move 1m in X
 translation_x = tf.Translation(x=1.0)
 
-# Rotation: 90 degrees around Z (Quaternion w, x, y, z)
-rotation_z = tf.Rotation(w=0.7071, z=0.7071)
+# Rotation: 45 degrees yaw (heading) using aerospace convention
+rotation_z = tf.Rotation.from_euler_angles(yaw=np.pi/4)
 
 # 2. Compose transforms (Order matters!)
 # Move then Rotate
 combined_transform = translation_x * rotation_z
 
 # 3. Apply to points
-# Define a point at origin
-initial_point = np.array([0.0, 0.0, 0.0])
+points = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+transformed_points = combined_transform.apply(points)
 
-# Transform the point
-transformed_point = tf.transform_points(combined_transform, initial_point)
-
-print(f"Transformed Point: {transformed_point}")
+print(f"Transformed Points:\n{transformed_points}")
 ```
+
+### Transform Graph
+
+```python
+import tgraph.transform as tf
+
+# Create a transform graph for a robot with a camera
+graph = tf.TransformGraph()
+
+# Define frame relationships
+graph.add_transform('world', 'robot_base', tf.Translation(x=1.0, y=2.0))
+graph.add_transform('robot_base', 'camera', tf.Transform(
+    translation=[0.1, 0, 0.5],
+    rotation=tf.Rotation.from_euler_angles(pitch=-0.1).rotation
+))
+
+# Query transforms between any frames (auto-composes path)
+world_to_camera = graph.get_transform('world', 'camera')
+
+# Inverse traversal works automatically
+camera_to_world = graph.get_transform('camera', 'world')
+```
+
+### Camera Projections
+
+```python
+import tgraph.transform as tf
+import numpy as np
+
+# Create a camera with intrinsic parameters
+K = np.array([[500, 0, 320], [0, 500, 240], [0, 0, 1]])
+camera = tf.CameraProjection(
+    intrinsic_matrix=K,
+    rotation_matrix=np.eye(3),
+    translation=np.zeros((3, 1))
+)
+
+# Project 3D points to 2D pixels
+points_3d = np.array([[0, 0, 5], [1, 0, 5], [0, 1, 5]])
+pixels = camera.apply(points_3d)
+print(f"Projected pixels:\n{pixels}")
+
+# Unproject with known depth
+inv_camera = camera.inverse()
+depths = np.array([5.0, 5.0, 5.0])
+points_recovered = inv_camera.unproject(pixels, depths)
+```
+
+## Transform Composition Rules
+
+The library supports composing transforms with the `*` operator. The dimensional flow determines what operations are valid:
+
+| Composition | Flow | Result | Use Case |
+|-------------|------|--------|----------|
+| `Transform * Transform` | 3D→3D→3D | `Transform` | Chain rigid body transforms |
+| `Projection * Transform` | 3D→3D→2D | `Projection` | Project from any frame to image |
+| `Transform * InverseProjection` | 2D→3D→3D | `MatrixTransform` | Unproject and transform rays |
+| `Projection * InverseProjection` | 2D→3D→2D | `MatrixTransform` | Inter-image mapping |
+
+**Key Principles:**
+
+1. **Projections are one-way:** 3D→2D loses depth. Use `InverseProjection.unproject(pixels, depths)` when depth is known.
+
+2. **Type degradation:** Composing SE(3) transforms with projections produces `MatrixTransform` or `Projection`, not `Transform`.
+
+3. **No Homography type needed:** The Fundamental Matrix (`P₂ * T * P₁⁻¹`) maps points to epipolar *lines*, not points. Our `MatrixTransform` fallback correctly handles these cases.
 
 ## Testing
 
-Run the test suite:
+We use `pytest` for testing and `pytest-cov` for coverage reporting.
 
-```bash
-pip install "transform-graph[dev]"
-pytest
-```
+### Running Tests Locally
+
+1.  **Install Development Dependencies:**
+    ```bash
+    pip install -e ".[dev]"
+    ```
+
+2.  **Run Tests:**
+    ```bash
+    pytest tests/
+    ```
+
+3.  **Run Tests with Coverage:**
+    ```bash
+    pytest tests/ --cov=tgraph --cov-report=term-missing
+    ```
+
+## CI/CD Workflow
+
+This project uses **GitHub Actions** for Continuous Integration.
+
+*   **Workflow File:** `.github/workflows/ci.yml`
+*   **Triggers:**
+    *   Push to `main` branch.
+    *   Pull Request to `main` branch.
+*   **Jobs:**
+    *   **Build & Test:**
+        *   Sets up Python 3.12.
+        *   Installs dependencies (including dev and viz extras).
+        *   Runs the full test suite with coverage reporting.
 
 ## License
 

@@ -30,6 +30,7 @@ viz = [
 ]
 dev = [
     "pytest>=8.0.0",
+    "pytest-cov",
 ]
 
 [tool.setuptools.packages.find]
