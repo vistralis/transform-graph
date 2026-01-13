@@ -31,7 +31,28 @@ viz = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov",
+    "ruff",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E: pycodestyle errors
+# F: Pyflakes
+# I: isort
+# N: pep8-naming
+# W: pycodestyle warnings
+# UP: pyupgrade
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["N806", "N803"] # Allow uppercase variables for matrices/vectors (standard in robotics)
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
