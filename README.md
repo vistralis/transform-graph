@@ -1,5 +1,7 @@
 # transform-graph
 
+![CI](https://github.com/vistralis/transform-graph/actions/workflows/ci.yml/badge.svg)
+
 **High-performance spatial transformations and frame graph management for robotics and computer vision.**
 
 `transform-graph` (namespace `tgraph`) is the foundational mathematical layer for Spatial AI and Robotics in Python. It provides strict-typed handling of SE(3) rigid body transformations and projections.
@@ -110,6 +112,15 @@ The library supports composing transforms with the `*` operator. The dimensional
 2. **Type degradation:** Composing SE(3) transforms with projections produces `MatrixTransform` or `Projection`, not `Transform`.
 
 3. **No Homography type needed:** The Fundamental Matrix (`P₂ * T * P₁⁻¹`) maps points to epipolar *lines*, not points. Our `MatrixTransform` fallback correctly handles these cases.
+
+## Documentation & Tutorial
+
+For a comprehensive guide on how to use `tgraph`, check out the [interactive tutorial](notebooks/tutorial.ipynb). It covers:
+*   Creating and composing transforms
+*   Managing complex frame graphs
+*   3D spatial and 2D topology visualization
+*   Camera models and projections
+*   Serialization
 
 ## Testing
 

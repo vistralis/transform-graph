@@ -276,9 +276,7 @@ class Transform(BaseTransform):
         return MatrixTransform(self.as_matrix() @ other.as_matrix(), dtype=self.dtype)
 
     def __repr__(self) -> str:
-        t = self.translation.flatten()
-        q = self.rotation
-        return f"Transform(translation=[{t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}], rotation={q})"
+        return f"Transform(translation={self.translation.flatten()!r}, rotation={self.rotation!r})"
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize transform to a JSON-compatible dictionary."""
@@ -300,85 +298,6 @@ class Transform(BaseTransform):
             rotation=data["rotation"],
             dtype=dtype,
         )
-
-
-class Pose:
-    """
-    A user-friendly wrapper around Transform for pose representation.
-    """
-    def __init__(
-        self, 
-        position: Optional[Union[np.ndarray, list, tuple]] = None, 
-        orientation: Optional[Union[quaternion.quaternion, np.ndarray, list, tuple]] = None
-    ):
-        # Use ensure_rotation logic but for rvec too
-        quat = quaternion.one
-        if orientation is not None:
-            if isinstance(orientation, quaternion.quaternion):
-                quat = orientation.normalized()
-            elif isinstance(orientation, (list, tuple, np.ndarray)):
-                arr = np.array(orientation, dtype=np.float64).flatten()
-                if arr.size == 4:
-                    quat = quaternion.quaternion(*arr).normalized()
-                elif arr.size == 3:
-                    # Rotation vector
-                    theta = np.linalg.norm(arr)
-                    if theta > 1e-8:
-                        quat = quaternion.from_rotation_vector(arr)
-                else:
-                    raise ValueError("Orientation must be quaternion (4) or rvec (3)")
-        
-        self._transform = Transform(translation=position, rotation=quat)
-
-    @property
-    def position(self) -> np.ndarray:
-        return self._transform.translation.flatten()
-    
-    @position.setter
-    def position(self, value: Union[np.ndarray, list, tuple]):
-        self._transform.translation = ensure_translation(value, self._transform.dtype)
-
-    @property
-    def orientation(self) -> quaternion.quaternion:
-        return self._transform.rotation
-    
-    @orientation.setter
-    def orientation(self, value: Union[quaternion.quaternion, np.ndarray, list, tuple]):
-        self._transform.rotation = ensure_rotation(value, self._transform.dtype)
-
-    def as_transform(self) -> Transform:
-        """Returns the underlying Transform object."""
-        return self._transform
-
-    @classmethod
-    def from_transform(cls, tf: Transform) -> "Pose":
-        """Creates a Pose from a Transform."""
-        return cls(position=tf.translation.flatten(), orientation=tf.rotation)
-
-    def inverse(self) -> "Pose":
-        """Returns the inverse pose."""
-        return Pose.from_transform(self._transform.inverse())
-    
-    def compose(self, other):
-        """Returns self * other"""
-        if isinstance(other, Pose):
-            return Pose.from_transform(self._transform * other.as_transform())
-        return Pose.from_transform(self._transform * other)
-
-    def __mul__(self, other: Union["Pose", Transform]) -> "Pose":
-        return self.compose(other)
-
-    def to_list(self) -> List[float]:
-        """Returns [px, py, pz, qw, qx, qy, qz]"""
-        q = self.orientation
-        p = self.position
-        return [float(p[0]), float(p[1]), float(p[2]), float(q.w), float(q.x), float(q.y), float(q.z)]
-    
-    def to_matrix(self) -> np.ndarray:
-        return self._transform.as_matrix()
-
-    def __repr__(self) -> str:
-        return f"Pose(pos={self.position}, quat={self.orientation})"
 
 
 class Translation(Transform):
@@ -1011,6 +930,142 @@ class CameraProjection(Projection):
         return f"CameraProjection(fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f})"
 
 
+class Pose:
+    """
+    A user-friendly wrapper around Transform for pose representation.
+    
+    Represents the pose of 'child_frame_id' relative to 'frame_id'.
+    """
+    def __init__(
+        self, 
+        position: Optional[Union[np.ndarray, list, tuple]] = None, 
+        orientation: Optional[Union[quaternion.quaternion, np.ndarray, list, tuple]] = None,
+        frame_id: Optional[str] = None,
+        child_frame_id: Optional[str] = None,
+    ):
+        # Use ensure_rotation logic but for rvec too
+        quat = quaternion.one
+        if orientation is not None:
+            if isinstance(orientation, quaternion.quaternion):
+                quat = orientation.normalized()
+            elif isinstance(orientation, (list, tuple, np.ndarray)):
+                arr = np.array(orientation, dtype=np.float64).flatten()
+                if arr.size == 4:
+                    quat = quaternion.quaternion(*arr).normalized()
+                elif arr.size == 3:
+                    # Rotation vector
+                    theta = np.linalg.norm(arr)
+                    if theta > 1e-8:
+                        quat = quaternion.from_rotation_vector(arr)
+                else:
+                    raise ValueError("Orientation must be quaternion (4) or rvec (3)")
+        
+        self._transform = Transform(translation=position, rotation=quat)
+        self.frame_id = frame_id
+        self.child_frame_id = child_frame_id
+
+    @property
+    def position(self) -> np.ndarray:
+        return self._transform.translation.flatten()
+    
+    @position.setter
+    def position(self, value: Union[np.ndarray, list, tuple]):
+        self._transform.translation = ensure_translation(value, self._transform.dtype)
+
+    @property
+    def orientation(self) -> quaternion.quaternion:
+        return self._transform.rotation
+    
+    @orientation.setter
+    def orientation(self, value: Union[quaternion.quaternion, np.ndarray, list, tuple]):
+        self._transform.rotation = ensure_rotation(value, self._transform.dtype)
+
+    def as_transform(self) -> Transform:
+        """Returns the underlying Transform object."""
+        return self._transform
+
+    @classmethod
+    def from_transform(
+        cls, 
+        tf: Transform, 
+        frame_id: Optional[str] = None, 
+        child_frame_id: Optional[str] = None
+    ) -> "Pose":
+        """Creates a Pose from a Transform."""
+        return cls(
+            position=tf.translation.flatten(), 
+            orientation=tf.rotation,
+            frame_id=frame_id,
+            child_frame_id=child_frame_id
+        )
+
+    def inverse(
+        self, 
+        new_frame_id: Optional[str] = None, 
+        new_child_frame_id: Optional[str] = None
+    ) -> "Pose":
+        """
+        Returns the inverse pose.
+        
+        By default, swaps frame_id and child_frame_id:
+        Inverse(T_A->B) = T_B->A
+        """
+        # Default behavior: swap frames
+        target_frame_id = new_frame_id if new_frame_id is not None else self.child_frame_id
+        target_child_frame_id = new_child_frame_id if new_child_frame_id is not None else self.frame_id
+        
+        return Pose.from_transform(
+            self._transform.inverse(), 
+            frame_id=target_frame_id,
+            child_frame_id=target_child_frame_id
+        )
+    
+    def compose(self, other):
+        """Returns self * other"""
+        # Logic: T_A_C = T_A_B * T_B_C
+        new_frame_id = self.frame_id
+        new_child_frame_id = None
+        
+        if isinstance(other, Pose):
+            # Check frame consistency (optional, but good practice)
+            # if self.child_frame_id and other.frame_id and self.child_frame_id != other.frame_id:
+            #     warn("Frame mismatch in composition")
+            new_child_frame_id = other.child_frame_id
+            return Pose.from_transform(
+                self._transform * other.as_transform(), 
+                frame_id=new_frame_id,
+                child_frame_id=new_child_frame_id
+            )
+            
+        return Pose.from_transform(
+            self._transform * other, 
+            frame_id=new_frame_id,
+            child_frame_id=new_child_frame_id
+        )
+
+    def __mul__(self, other: Union["Pose", Transform]) -> "Pose":
+        return self.compose(other)
+
+    def to_list(self) -> List[float]:
+        """Returns [px, py, pz, qw, qx, qy, qz]"""
+        q = self.orientation
+        p = self.position
+        return [float(p[0]), float(p[1]), float(p[2]), float(q.w), float(q.x), float(q.y), float(q.z)]
+    
+    def to_matrix(self) -> np.ndarray:
+        return self._transform.as_matrix()
+
+    def __repr__(self) -> str:
+        elements = [
+            f"position={self.position!r}",
+            f"orientation={self.orientation!r}"
+        ]
+        if self.frame_id:
+            elements.append(f"frame_id={self.frame_id!r}")
+        if self.child_frame_id:
+            elements.append(f"child_frame_id={self.child_frame_id!r}")
+        return f"Pose({', '.join(elements)})"
+
 def transform_points(transform: BaseTransform, points: np.ndarray) -> np.ndarray:
     """
     Applies a transformation to a set of 3D points.
@@ -1031,6 +1086,28 @@ def transform_points(transform: BaseTransform, points: np.ndarray) -> np.ndarray
     transformed_hom = (transform.as_matrix() @ hom_points.T).T
     
     return transformed_hom[:, :3]
+
+
+def get_basis_vectors(transform: BaseTransform, length: float = 1.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Get the origin and basis vectors (x, y, z) of the transform's coordinate frame.
+    
+    Args:
+        transform: The transform defining the coordinate system.
+        length: Length of the basis vectors.
+        
+    Returns:
+        Tuple: (origin, x_vec, y_vec, z_vec) as 3-element numpy arrays in global frame.
+    """
+    matrix = transform.as_matrix()
+    origin = matrix[:3, 3]
+    rotation = matrix[:3, :3]
+    
+    x_vec = origin + rotation @ np.array([length, 0, 0])
+    y_vec = origin + rotation @ np.array([0, length, 0])
+    z_vec = origin + rotation @ np.array([0, 0, length])
+    
+    return origin, x_vec, y_vec, z_vec
 
 
 # -----------------------------------------------------------------------------
@@ -1059,12 +1136,17 @@ class TransformGraph:
 
     # Edge weights for path finding
     ADDED_EDGE_WEIGHT = 1.0
-    CACHED_EDGE_WEIGHT = 0.1
+    CACHED_EDGE_WEIGHT = 1.0
 
     def __init__(self):
         self._graph = nx.Graph()
         # Maps (source, target) added edges to list of cache edges that depend on them
         self._dependency_map: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+
+    @property
+    def graph(self) -> nx.Graph:
+        """Returns the internal NetworkX graph (read-only)."""
+        return self._graph
 
     @property
     def frames(self) -> List[str]:
@@ -1317,6 +1399,33 @@ class TransformGraph:
             self._graph.remove_edge(u, v)
         
         self._dependency_map.clear()
+
+    def get_connected_nodes(self, node: str) -> List[str]:
+        """
+        Get all nodes connected to the given node (connected component).
+        
+        Args:
+            node: The node to start from.
+            
+        Returns:
+            List[str]: List of connected node IDs (including the start node).
+            
+        Raises:
+            ValueError: If the node is not in the graph.
+        """
+        if node not in self._graph:
+            raise ValueError(f"Frame '{node}' not found in graph.")
+        return list(nx.node_connected_component(self._graph, node))
+
+    def get_connected_components(self) -> List[List[str]]:
+        """
+        Get all connected components in the graph.
+        
+        Returns:
+            List[List[str]]: List of lists, where each inner list contains
+                             frame IDs belonging to a connected component.
+        """
+        return [list(c) for c in nx.connected_components(self._graph)]
 
     def to_dict(self) -> Dict[str, Any]:
         """

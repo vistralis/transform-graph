@@ -197,3 +197,29 @@ def test_error_handling():
         
     with pytest.raises(ValueError, match="Frame .* not found in graph"):
         graph.get_transform("A", "Z")
+
+
+def test_remove_transform():
+    """Test removing transforms."""
+    graph = tf.TransformGraph()
+    graph.add_transform("A", "B", tf.Translation(x=1))
+    graph.add_transform("B", "C", tf.Translation(x=1))
+    
+    # Create cache
+    graph.get_transform("A", "C")
+    
+    # Remove edge B->C
+    graph.remove_transform("B", "C")
+    
+    assert not graph.has_transform("B", "C")
+    assert not graph.has_frame("C") # C should be removed as it's isolated
+    assert graph.has_frame("B")     # B still connected to A
+    
+    # Cache should be invalidated
+    # Graph doesn't expose cache directly easily, but A->C should fail now
+    with pytest.raises(ValueError, match="Frame .* not found in graph"):
+        graph.get_transform("A", "C")
+        
+    # Error handling
+    with pytest.raises(ValueError, match="No transform between"):
+        graph.remove_transform("A", "Z")
