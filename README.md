@@ -122,26 +122,45 @@ For a comprehensive guide on how to use `tgraph`, check out the [Tutorial](docs/
 *   Camera models and projections
 *   Serialization
 
-## Testing
+## Development & Quality Control
 
-We use `pytest` for testing and `pytest-cov` for coverage reporting.
+We use `ruff` for linting/formatting and `pytest` for testing.
 
-### Running Tests Locally
+### 1. Installation
 
-1.  **Install Development Dependencies:**
-    ```bash
-    pip install -e ".[dev]"
-    ```
+Install the project in editable mode with all development dependencies:
+```bash
+pip install -e ".[dev,viz]"
+```
 
-2.  **Run Tests:**
-    ```bash
-    pytest tests/
-    ```
+### 2. Linting & Formatting
 
-3.  **Run Tests with Coverage:**
-    ```bash
-    pytest tests/ --cov=tgraph --cov-report=term-missing
-    ```
+We adhere to strict Python standards using **Ruff**.
+
+**Check for issues:**
+```bash
+ruff check .
+```
+
+**Auto-fix linting issues and reformat code:**
+```bash
+ruff check . --fix
+ruff format .
+```
+
+### 3. Testing & Coverage
+
+We aim for high code coverage to ensure mathematical rigor.
+
+**Run all tests:**
+```bash
+pytest
+```
+
+**Run tests with coverage report:**
+```bash
+pytest --cov=tgraph --cov-report=term-missing
+```
 
 ## CI/CD Workflow
 
