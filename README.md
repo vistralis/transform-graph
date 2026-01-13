@@ -115,7 +115,7 @@ The library supports composing transforms with the `*` operator. The dimensional
 
 ## Documentation & Tutorial
 
-For a comprehensive guide on how to use `tgraph`, check out the [interactive tutorial](notebooks/tutorial.ipynb). It covers:
+For a comprehensive guide on how to use `tgraph`, check out the [Tutorial](docs/Tutorial.md). It covers:
 *   Creating and composing transforms
 *   Managing complex frame graphs
 *   3D spatial and 2D topology visualization
