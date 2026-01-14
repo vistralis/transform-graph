@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Test frustum visualization with realistic camera configurations.
 """
-
 import numpy as np
 import pytest
-
 import tgraph.transform as tf
-
 try:
     import tgraph.visualization as vis
     import plotly.graph_objects as go
     HAS_PLOTLY = True
 except ImportError:
     HAS_PLOTLY = False
-
-
 @pytest.mark.skipif(not HAS_PLOTLY, reason="Plotly not installed")
 def test_frustum_with_realistic_camera():
     """Test frustum visualization with realistic camera from user scenario."""
@@ -109,13 +107,17 @@ def test_frustum_different_focal_lengths():
 
     # Wide angle camera (small focal length = wider FOV)
     K_wide = np.array([[300, 0, 640], [0, 300, 360], [0, 0, 1]])
-    cam_wide = tf.CameraProjection(K=K_wide, t=[0, -2, 0], image_size=(1280, 720))
-    graph.add_transform('world', 'wide_cam', cam_wide)
+    cam_wide = tf.CameraProjection(K=K_wide, image_size=(1280, 720))
+    # Original test had t=[0, -2, 0]. Add explicit transform.
+    graph.add_transform('world', 'wide_cam_mount', tf.Translation(x=0, y=-2, z=0))
+    graph.add_transform('wide_cam_mount', 'wide_cam', cam_wide)
 
     # Telephoto camera (large focal length = narrower FOV)
     K_tele = np.array([[2000, 0, 640], [0, 2000, 360], [0, 0, 1]])
-    cam_tele = tf.CameraProjection(K=K_tele, t=[0, 2, 0], image_size=(1280, 720))
-    graph.add_transform('world', 'tele_cam', cam_tele)
+    cam_tele = tf.CameraProjection(K=K_tele, image_size=(1280, 720))
+    # Original test had t=[0, 2, 0]
+    graph.add_transform('world', 'tele_cam_mount', tf.Translation(x=0, y=2, z=0))
+    graph.add_transform('tele_cam_mount', 'tele_cam', cam_tele)
 
     fig = vis.visualize_transform_graph(
         graph,

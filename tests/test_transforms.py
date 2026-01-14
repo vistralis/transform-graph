@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Test script for tgraph.transform module
 """
-
 import numpy as np
 import pytest
-
 import tgraph.transform as tf
-
-
 def test_basic_transforms():
     """Test creating basic transforms."""
-
     # Translation only
     trans = tf.Translation(x=1.0, y=2.0, z=3.0)
     expected_matrix = np.eye(4)
     expected_matrix[0:3, 3] = [1.0, 2.0, 3.0]
     assert np.allclose(trans.as_matrix(), expected_matrix)
-
     # Rotation only (90 degrees around Z-axis)
     # quaternion for 90° rotation around Z: w=cos(45°), z=sin(45°)
     rot_z_90 = tf.Rotation(w=np.cos(np.pi / 4), x=0, y=0, z=np.sin(np.pi / 4))

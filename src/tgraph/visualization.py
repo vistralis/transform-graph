@@ -1,19 +1,17 @@
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Visualization module for TransformGraph using Plotly.
 """
-
 import networkx as nx
 import numpy as np
 import quaternion
-
 try:
     import plotly.graph_objects as go
 except ImportError:
     go = None
-
 from tgraph.transform import CameraProjection, Identity, InverseCameraProjection, InverseProjection, Projection, Transform, TransformGraph
-
-
 def _check_plotly():
     if go is None:
         raise ImportError(

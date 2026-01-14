@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Test connectivity methods in TransformGraph.
 """
-
 import pytest
-
 import tgraph.transform as tf
-
-
 def test_connected_components():
     """Test get_connected_components and get_connected_nodes."""
     graph = tf.TransformGraph()
-
     # Create two disconnected components
     # Component 1: A-B-C
     graph.add_transform("A", "B", tf.Translation(x=1))
     graph.add_transform("B", "C", tf.Translation(x=1))
-
     # Component 2: X-Y
     graph.add_transform("X", "Y", tf.Translation(x=1))
 
@@ -41,7 +38,7 @@ def test_connected_components():
     assert set(nodes_x) == {"X", "Y"}
 
     # Test error handling
-    with pytest.raises(ValueError, match="Frame .* not found"):
+    with pytest.raises(ValueError, match="Frame 'Z' is not in the graph"):
         graph.get_connected_nodes("Z")
 
 

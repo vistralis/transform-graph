@@ -55,8 +55,11 @@ import tgraph.transform as tf
 # Create a transform graph for a robot with a camera
 graph = tf.TransformGraph()
 
-# Define frame relationships
+# Define frame relationships (Source -> Target)
+# Robot Base is 1m in X, 2m in Y relative to World
 graph.add_transform('world', 'robot_base', tf.Translation(x=1.0, y=2.0))
+
+# Camera is offset from Robot Base
 graph.add_transform('robot_base', 'camera', tf.Transform(
     translation=[0.1, 0, 0.5],
     rotation=tf.Rotation.from_euler_angles(pitch=-0.1).rotation
@@ -76,7 +79,8 @@ import tgraph.transform as tf
 import numpy as np
 
 # Create a camera with intrinsic parameters
-# Create a camera with intrinsic parameters (Intrinsic Only)
+# Create a camera with intrinsic parameters (Strictly Intrinsic)
+# Extrinsics (Position/Orientation) must be handled by a separate Transform.
 K = np.array([[500, 0, 320], [0, 500, 240], [0, 0, 1]])
 camera = tf.CameraProjection(intrinsic_matrix=K, image_size=(640, 480))
 
@@ -113,6 +117,19 @@ The library supports composing transforms with the `*` operator. The dimensional
 2. **Type degradation:** Composing SE(3) transforms with projections produces `MatrixTransform` or `Projection`, not `Transform`.
 
 3. **No Homography type needed:** The Fundamental Matrix (`P₂ * T * P₁⁻¹`) maps points to epipolar *lines*, not points. Our `MatrixTransform` fallback correctly handles these cases.
+
+### Epipolar Geometry
+The library natively refines epipolar geometry from the graph structure:
+```python
+# Essential Matrix (E)
+E = graph.get_essential_matrix("image1", "image2")
+
+# Fundamental Matrix (F)
+F = graph.get_fundamental_matrix("image1", "image2")
+
+# Plane-Induced Homography (H)
+H = graph.get_homography("image1", "image2", plane_normal=[0,0,1], plane_distance=1.0)
+```
 
 ## Documentation & Tutorial
 

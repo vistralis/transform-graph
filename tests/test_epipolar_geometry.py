@@ -1,10 +1,12 @@
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import sys
 sys.path.insert(0, 'src')
 import tgraph.transform as tf
 import tgraph.visualization as vis
 import numpy as np
 import unittest
-
 class TestMultiCamera(unittest.TestCase):
     def setUp(self):
         # User scenario setup

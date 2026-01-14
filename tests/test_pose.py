@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Test the Pose class and its frame_id semantics.
 """
-
 import numpy as np
 import pytest
 import quaternion
-
 import tgraph.transform as tf
-
-
 def test_pose_init_and_properties():
     """Test Pose initialization and properties."""
     # Default init (Identity)

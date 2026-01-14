@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Test the TransformGraph implementation.
 """
-
 import numpy as np
 import pytest
-
 import tgraph.transform as tf
-
-
 def test_basic_graph_operations():
     """Test basic add/get operations."""
-
     graph = tf.TransformGraph()
-
     # Add transforms
     world_to_base = tf.Translation(x=2.0, y=1.0, z=0.0)
     base_to_camera = tf.Transform(translation=[0.5, 0.0, 0.5], rotation=[1.0, 0.0, 0.0, 0.0])

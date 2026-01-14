@@ -9,12 +9,8 @@ This document tracks identified flaws, silent error sources, and mathematical in
 
 **Proposed Fix:** Move the `apply()` method into the `BaseTransform` abstract interface. Deprecate the global `transform_points` in favor of `transform.apply(points)`.
 
-## 2. Invalid Dimensional Flow in Composition (`*`)
-**Issue:** The `*` operator allows any two transforms to be multiplied if they are 4x4, regardless of their geometric input/output dimensions.
-*   **Invalid:** `Transform * Projection`. This implies $T(P(x))$, where $P(x)$ is a 2D pixel but $T$ expects a 3D point.
-*   **Valid:** `Projection * Transform`. This is $P(T(x))$, transform then project.
-
-**Proposed Fix:** Add `input_dim` and `output_dim` properties to `BaseTransform`. Validate that `left.input_dim == right.output_dim` during composition.
+## 2. Invalid Dimensional Flow in Composition (`*`) [RESOLVED]
+**Resolution:** Strict type checking implemented in `Transform.__mul__` to ban `Transform * CameraProjection`. `Projection.__mul__` correctly handles compositions with `MatrixTransform`.
 
 ## 3. Pose Frame-ID Mismatch
 **Issue:** Composing two `Pose` objects (`pose_a * pose_b`) currently propagates frame IDs blindly without verifying if they are semantically linkable.
@@ -22,12 +18,8 @@ This document tracks identified flaws, silent error sources, and mathematical in
 
 **Proposed Fix:** Add a validation check in `Pose.__mul__`. Raise a `ValueError` if `self.child_frame_id != other.frame_id` (when both are defined).
 
-## 4. `InverseProjection` Pseudo-inverse Ambiguity
-**Issue:** `InverseProjection.as_matrix()` returns a Moore-Penrose pseudo-inverse. While useful for internal matrix algebra, users might mistakenly use it to project pixels back to 3D without providing depth, leading to geometrically incorrect results.
+## 4. `InverseProjection` Pseudo-inverse Ambiguity [RESOLVED]
+**Resolution:** `InverseProjection` class implemented with explicit `unproject(pixels, depths)` method. `as_matrix()` returns pseudo-inverse for composition but unprojection requires depth.
 
-**Proposed Fix:** Ensure `as_matrix()` or a new `apply()` on `InverseProjection` raises an explicit error or warning stating that depth is required, directing users to `unproject(pixels, depths)`.
-
-## 5. Strict Type Validation in Constructors
-**Issue:** While `**kwargs` were removed from `Rotation` and `Translation`, other constructors (like `Transform` or `Projection`) might still allow loose inputs that don't match the expected SE(3) or Projective constraints.
-
-**Proposed Fix:** Standardize validation across all constructors using the `ensure_translation` and `ensure_rotation` pattern established in `transform.py`.
+## 5. Strict Type Validation in Constructors [RESOLVED]
+**Resolution:** `ensure_translation` and `ensure_rotation` helpers are standardized and used in `Transform` and `Pose`. `CameraProjection` validates intrinsics shape.

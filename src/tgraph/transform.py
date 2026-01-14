@@ -1,19 +1,17 @@
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Union
-
 import networkx as nx
 import numpy as np
 import quaternion
-
 # -----------------------------------------------------------------------------
 # Transform Registry for Serialization
 # -----------------------------------------------------------------------------
-
 # Global registry mapping type names to classes
 _TRANSFORM_REGISTRY: dict[str, type["BaseTransform"]] = {}
-
-
 def register_transform(cls: type["BaseTransform"]) -> type["BaseTransform"]:
     """
     Decorator to register a transform class for serialization.
@@ -308,6 +306,37 @@ class BaseTransform(ABC):
             BaseTransform: The inverse transformation.
         """
         pass
+
+    def apply(self, vector: np.ndarray | list | tuple) -> np.ndarray:
+        """
+        Apply the transform to 3D vectors (Nx3 or Nx4).
+
+        Args:
+            vector: Nx3 or Nx4 array of vectors.
+                    - If Nx3: Treated as 3D points/vectors (w=1 implied if Transform, but checking subclass logic).
+                      Standard BaseTransform behavior:
+                      Homogenize (w=1) -> Multiply -> Dehomogenize (w division).
+                    - If Nx4: Treated as homogeneous vectors.
+                      Multiply -> Return Nx4.
+
+        Returns:
+            np.ndarray: Transformed vectors (Nx3 or Nx4).
+        """
+        vector = np.atleast_2d(vector)
+        
+        if vector.shape[1] == 3:
+            # Homogenize (w=1)
+            hom_vector = np.hstack([vector, np.ones((vector.shape[0], 1), dtype=self.dtype)])
+            # Apply
+            transformed_hom = (self.as_matrix() @ hom_vector.T).T
+            # Dehomogenize (return 3D)
+            return transformed_hom[:, :3]
+            
+        elif vector.shape[1] == 4:
+             # Generic 4x4
+             return (self.as_matrix() @ vector.T).T
+        else:
+             raise ValueError(f"Input vector must be Nx3 or Nx4, got {vector.shape}")
 
     @abstractmethod
     def __mul__(self, other: "BaseTransform") -> "BaseTransform":
@@ -695,30 +724,53 @@ class Projection(BaseTransform):
         # Otherwise (e.g. composed with Rigid Transform), we consider it a new Projection
         return Projection(result_matrix, dtype=self.dtype)
 
-    def apply(self, points: np.ndarray) -> np.ndarray:
+    def apply(self, vector: np.ndarray | list | tuple) -> np.ndarray:
         """
-        Project 3D points to 2D pixel coordinates.
+        Project 3D vectors to 2D pixel coordinates.
 
         Args:
-            points: Nx3 array of 3D points.
+            vector: Nx3 (points) or Nx4 (homogeneous) array.
 
         Returns:
-            np.ndarray: Nx2 array of 2D pixel coordinates.
+            np.ndarray: Nx2 pixel coordinates.
         """
-        points = np.atleast_2d(points)
-        if points.shape[1] != 3:
-            raise ValueError(f"Points must be Nx3, got {points.shape}")
+        vector = np.atleast_2d(vector)
+        
+        if vector.shape[1] == 3:
+             # Homogenize (w=1 implicit for points)
+             hom_vec = np.hstack([vector, np.ones((vector.shape[0], 1), dtype=self.dtype)])
+        elif vector.shape[1] == 4:
+             hom_vec = vector
+        else:
+             raise ValueError(f"Input must be Nx3 or Nx4, got {vector.shape}")
 
-        # Homogeneous coordinates
-        hom_points = np.hstack([points, np.ones((points.shape[0], 1))])
-        projected = (self.matrix[:3, :] @ hom_points.T).T
-
-        # Normalize by w (perspective division)
+        # Project: (3x4 or 4x4) @ 4x1 -> 4x1 (if 4x4) or 3x1 (if 3x4?)
+        # Base class stores 4x4 with bottom [0,0,0,1].
+        # Result will be [u*w, v*w, w, 1].
+        projected = (self.matrix @ hom_vec.T).T
+        
+        # We need [x, y, w] part.
+        # projected is Nx4.
+        
+        # Perspective division
         w = projected[:, 2:3]
-        w = np.where(np.abs(w) < 1e-10, 1e-10, w)  # Avoid division by zero
+        w = np.where(np.abs(w) < 1e-10, 1e-10, w)
         pixels = projected[:, :2] / w
-
+        
         return pixels
+
+    def project_points(self, points: np.ndarray | list | tuple) -> np.ndarray:
+        """
+        Project 3D points (Nx3 or Nx4) to 2D pixel coordinates.
+        alias for apply(points).
+
+        Args:
+             points: Nx3 or Nx4 array of points.
+ 
+        Returns:
+             np.ndarray: Nx2 pixel coordinates.
+        """
+        return self.apply(points)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize projection to a JSON-compatible dictionary."""
@@ -789,6 +841,45 @@ class InverseProjection(BaseTransform):
     def __mul__(self, other: BaseTransform) -> "MatrixTransform":
         """Compose with another transform using pseudo-inverse."""
         return MatrixTransform(self.as_matrix() @ other.as_matrix(), dtype=self.dtype)
+
+    def apply(self, vector: np.ndarray | list | tuple) -> np.ndarray:
+        """
+        Unproject 2D/3D vectors using pseudo-inverse.
+
+        Args:
+            vector: Nx2 (pixels), Nx3 (homogenous pixels), or Nx4.
+        
+        Returns:
+            np.ndarray: Transformed vectors (Nx3 or Nx4).
+        """
+        vector = np.atleast_2d(vector)
+        cols = vector.shape[1]
+        
+        input_vec = None
+        if cols == 2:
+            # Nx2 pixels -> Nx3 homogeneous [u, v, 1]
+            input_vec = np.hstack([vector, np.ones((vector.shape[0], 1), dtype=self.dtype)])
+        elif cols == 3:
+            input_vec = vector
+        elif cols == 4:
+            input_vec = vector
+        else:
+             raise ValueError(f"Input must be Nx2, Nx3 or Nx4, got {vector.shape}")
+             
+        # If input is 3D, and P_inv is 4x4, we need 4D input?
+        # P_inv is 4x4 (from BaseTransform.as_matrix which pinv's 4x4 P).
+        # We need to pad to 4D if it's 3D.
+        if input_vec.shape[1] == 3:
+             # Pad with 0? or 1?
+             # Let's assume w=1 for "point-like" unprojection (ray).
+             input_vec = np.hstack([input_vec, np.ones((input_vec.shape[0], 1), dtype=self.dtype)])
+             
+        result = (self.as_matrix() @ input_vec.T).T
+        
+        # User wants "homogenize when needed and dehomogenize".
+        if cols < 4:
+             return result[:, :3]
+        return result
 
     def unproject(self, pixels: np.ndarray, depths: np.ndarray) -> np.ndarray:
         """
@@ -1264,6 +1355,9 @@ class Pose:
 def transform_points(transform: BaseTransform, points: np.ndarray) -> np.ndarray:
     """
     Applies a transformation to a set of 3D points.
+    
+    Strictly supports Transform, Rotation, Translation, MatrixTransform.
+    For Projections, use projection.apply(vector).
 
     Args:
         transform: The transformation to apply.
@@ -1271,13 +1365,24 @@ def transform_points(transform: BaseTransform, points: np.ndarray) -> np.ndarray
 
     Returns:
         np.ndarray: Nx3 array of transformed points.
+        
+    Raises:
+        TypeError: If transform is not a rigid/matrix transform.
     """
+    # Strict Type Checking
+    if not isinstance(transform, (Transform, Rotation, Translation, Identity, MatrixTransform)):
+         if isinstance(transform, Projection):
+              msg = f"transform_points supports only rigid transforms. For Projections, use {type(transform).__name__}.project_points() instead."
+         else:
+              msg = f"transform_points supports only rigid transforms (Transform, Rotation, Translation). Got {type(transform).__name__}. Use {type(transform).__name__}.apply() instead."
+         raise TypeError(msg)
+
     points = np.atleast_2d(points)
     if points.shape[1] != 3:
         raise ValueError(f"Points must be Nx3, got {points.shape}")
 
     # Homogeneous coordinates
-    hom_points = np.hstack([points, np.ones((points.shape[0], 1))])
+    hom_points = np.hstack([points, np.ones((points.shape[0], 1), dtype=transform.dtype)])
     transformed_hom = (transform.as_matrix() @ hom_points.T).T
 
     return transformed_hom[:, :3]
@@ -1761,3 +1866,122 @@ class TransformGraph:
         Returns s.
         """
         return float(intrinsic_matrix[0, 1])
+
+    def clear_cache(self) -> None:
+        """
+        Clear all cached shortcut transforms.
+        
+        Removes edges marked with is_cache=True.
+        """
+        edges_to_remove = [
+            (u, v) for u, v, data in self._graph.edges(data=True)
+            if data.get("is_cache", False)
+        ]
+        self._graph.remove_edges_from(edges_to_remove)
+        self._dependency_map.clear()
+
+    def get_connected_components(self) -> list[set[str]]:
+        """
+        Get all connected components in the graph.
+        
+        Returns:
+            List of sets, where each set contains frame IDs of a connected component.
+        """
+        return list(nx.connected_components(self._graph))
+
+    def get_connected_nodes(self, frame_id: str) -> set[str]:
+        """
+        Get the set of all nodes connected to the given frame (its connected component).
+        
+        Args:
+            frame_id: The frame to start searching from.
+            
+        Returns:
+            Set of connected frame IDs.
+            
+        Raises:
+            ValueError: If frame_id is not in the graph.
+        """
+        if frame_id not in self._graph:
+            raise ValueError(f"Frame '{frame_id}' is not in the graph.")
+        return nx.node_connected_component(self._graph, frame_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Serialize the entire graph to a dictionary.
+        
+        Returns:
+            Dict containing 'frames' and 'edges' (only explicit, non-cached edges).
+        """
+        frames = list(self.frames)
+        edges = []
+        for u, v, data in self._graph.edges(data=True):
+            if not data.get("is_cache", False):
+                transform = data["transform"]
+                edges.append({
+                    "source": data.get("reference_frame", u) if data.get("reference_frame") == u else v,
+                    "target": data.get("reference_frame", u) if data.get("reference_frame") != u else u,
+                    "transform": transform.to_dict(),
+                    "u_internal": u, # For debugging mostly
+                    "v_internal": v
+                })
+                # Reconstruct standardized Source->Target Edge
+                # Our internal storage is undirected edge (u, v) with 'reference_frame' pointing to Target.
+                # Transform is T_source_to_target.
+                # So if ref=u, then u is Target, v is Source. Edge: v->u.
+                ref = data.get("reference_frame")
+                src = v if ref == u else u
+                tgt = u if ref == u else v
+                
+                # We save explicit directed edges
+                edges.append({
+                    "source": src,
+                    "target": tgt,
+                    "transform": transform.to_dict()
+                })
+        
+        # Deduplicate edges (since we iterate undirected edges, we only see each once)
+        # Wait, the logic above added twice? 
+        # Refactor:
+        edges_list = []
+        for u, v, data in self._graph.edges(data=True):
+            if data.get("is_cache", False):
+                continue
+            
+            ref = data.get("reference_frame")
+            if ref is None:
+                continue
+                
+            tgt = ref
+            src = v if ref == u else u
+            transform = data["transform"]
+            
+            edges_list.append({
+                "source": src,
+                "target": tgt,
+                "transform": transform.to_dict()
+            })
+
+        return {
+            "frames": frames,
+            "edges": edges_list
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TransformGraph":
+        """
+        Deserialize a graph from a dictionary.
+        
+        Args:
+            data: Dictionary produced by to_dict().
+            
+        Returns:
+            New TransformGraph instance.
+        """
+        graph = cls()
+        for edge_data in data.get("edges", []):
+            src = edge_data["source"]
+            tgt = edge_data["target"]
+            transform = deserialize_transform(edge_data["transform"])
+            graph.add_transform(src, tgt, transform)
+        return graph

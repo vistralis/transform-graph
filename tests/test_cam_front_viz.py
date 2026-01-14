@@ -1,9 +1,11 @@
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import numpy as np
 import sys
 sys.path.insert(0, 'src')
 import tgraph.transform as tf
 import tgraph.visualization as vis
-
 # User provided parameters
 cam_front = {
     "camera_matrix": [

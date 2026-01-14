@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Vistralis Labs. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Test the visualization module.
 """
-
 import numpy as np
 import pytest
-
 import tgraph.transform as tf
 import tgraph.visualization as vis
-
 # Skip if plotly is not installed (though it should be in CI)
 try:
     import plotly.graph_objects as go
-
     HAS_PLOTLY = True
 except ImportError:
     HAS_PLOTLY = False
-
-
 @pytest.mark.skipif(not HAS_PLOTLY, reason="Plotly not installed")
 def test_visualize_transform_graph():
     """Test 3D visualization."""
