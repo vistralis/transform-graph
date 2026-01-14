@@ -76,22 +76,23 @@ import tgraph.transform as tf
 import numpy as np
 
 # Create a camera with intrinsic parameters
+# Create a camera with intrinsic parameters (Intrinsic Only)
 K = np.array([[500, 0, 320], [0, 500, 240], [0, 0, 1]])
-camera = tf.CameraProjection(
-    intrinsic_matrix=K,
-    rotation_matrix=np.eye(3),
-    translation=np.zeros((3, 1))
-)
+camera = tf.CameraProjection(intrinsic_matrix=K, image_size=(640, 480))
 
-# Project 3D points to 2D pixels
-points_3d = np.array([[0, 0, 5], [1, 0, 5], [0, 1, 5]])
-pixels = camera.apply(points_3d)
+# Project 3D points to 2D pixels (points must be in Camera Frame)
+points_camera_frame = np.array([[0, 0, 5], [1, 0, 5], [0, 1, 5]])
+pixels = camera.apply(points_camera_frame)
 print(f"Projected pixels:\n{pixels}")
 
-# Unproject with known depth
+# Unproject with known depth (returns points in Camera Frame)
 inv_camera = camera.inverse()
 depths = np.array([5.0, 5.0, 5.0])
 points_recovered = inv_camera.unproject(pixels, depths)
+
+# To handle Extrinsics, compose with a Transform
+# P_world = CameraProjection * T_cam_to_world.inverse() * Point_world
+# Or use TransformGraph for automatic composition.
 ```
 
 ## Transform Composition Rules

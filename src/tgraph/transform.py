@@ -151,6 +151,66 @@ def deserialize_transform(data: dict[str, Any]) -> "BaseTransform":
 # -----------------------------------------------------------------------------
 
 
+def decompose_projection_to_objects(
+    projection_matrix: np.ndarray, dtype: np.dtype = np.float64
+) -> tuple["CameraProjection", "Transform"]:
+    """
+    Decompose a 3x4 projection matrix P into Intrinsic (CameraProjection) and Extrinsic (Transform) objects.
+    
+    P = K @ [R | t]
+    
+    Returns:
+        (CameraProjection, Transform)
+        - CameraProjection: Holds K (Intrinsic only)
+        - Transform: Extrinsic Transform T_world_to_cam (OpenCV convention: R, t).
+          Note: This Transform represents the conversion from World to Camera frame.
+          If you want Camera Pose (Camera to World), take the inverse of this transform.
+    """
+    from scipy.linalg import rq
+
+    P = np.asarray(projection_matrix, dtype=dtype)
+    if P.shape == (4, 4):
+        P = P[:3, :]
+    
+    if P.shape != (3, 4):
+        raise ValueError(f"Projection matrix must be 3x4 or 4x4, got {P.shape}")
+
+    # Extract M = P[:3,:3] = K @ R
+    M = P[:3, :3]
+
+    # RQ decomposition: M = R @ Q (scipy uses K, R notation where K is upper tri)
+    intrinsic_matrix, rotation_matrix = rq(M)
+
+    # Ensure K has positive diagonal
+    for i in range(3):
+        if intrinsic_matrix[i, i] < 0:
+            intrinsic_matrix[i, :] *= -1
+            rotation_matrix[:, i] *= -1
+
+    # Normalize K so that K[2,2] = 1
+    scale = intrinsic_matrix[2, 2]
+    if abs(scale) > 1e-10:
+        intrinsic_matrix = intrinsic_matrix / scale
+
+    # Ensure R is proper rotation
+    if np.linalg.det(rotation_matrix) < 0:
+        rotation_matrix = -rotation_matrix
+        intrinsic_matrix = -intrinsic_matrix
+
+    # Compute translation: P[:3,3] = K @ t -> t = inv(K) @ P[:3,3]
+    t_vec = np.linalg.solve(intrinsic_matrix, P[:3, 3])
+    t_vec = t_vec.reshape(3, 1)
+
+    # Convert Rotation Matrix to Quaternion
+    rot_quat = quaternion.from_rotation_matrix(rotation_matrix)
+
+    # Create Objects
+    cam_proj = CameraProjection(intrinsic_matrix=intrinsic_matrix, dtype=dtype)
+    extrinsic_tf = Transform(translation=t_vec, rotation=rot_quat, dtype=dtype)
+
+    return cam_proj, extrinsic_tf
+
+
 def ensure_translation(
     translation: np.ndarray | list | tuple | None, dtype: np.dtype
 ) -> np.ndarray:
@@ -192,6 +252,33 @@ def ensure_rotation(
         return quaternion.quaternion(*array)
     else:
         raise ValueError(f"Rotation must be a quaternion or 4 elements [w,x,y,z], got {array.size}")
+
+
+
+def skew(vector: np.ndarray | list | tuple) -> np.ndarray:
+    """
+    Returns the 3x3 skew-symmetric matrix of a 3-element vector.
+    
+    [v]x = [[  0, -v3,  v2],
+            [ v3,   0, -v1],
+            [-v2,  v1,   0]]
+            
+    Args:
+        vector: A 3-element sequence (shape (3,) or (3,1)).
+        
+    Returns:
+        np.ndarray: 3x3 skew-symmetric matrix.
+    """
+    v = np.asarray(vector, dtype=np.float64).flatten()
+    if v.size != 3:
+        raise ValueError(f"Vector must have 3 elements, got {v.size}")
+    
+    vx, vy, vz = v
+    return np.array([
+        [0.0, -vz, vy],
+        [vz, 0.0, -vx],
+        [-vy, vx, 0.0]
+    ], dtype=np.float64)
 
 
 class BaseTransform(ABC):
@@ -327,46 +414,23 @@ class Transform(BaseTransform):
             )
             return Transform(translation=new_translation, rotation=new_rotation, dtype=self.dtype)
         
-        # Special handling for CameraProjection to preserve structure
-        # Import here to avoid circular dependency
-        if other.__class__.__name__ == 'CameraProjection':
-            # When composing T * CameraProjection:
-            #   T: parent→child transform (e.g., world→optical_frame)
-            #   Camera: has CV extrinsics [R|t] representing child→camera
-            #   Result: new camera with CV extrinsics parent→camera
-            #
-            # Approach: Compose in Transform convention, then convert back to CV convention
-            K = other.intrinsic_matrix
-            R_cam = other.rotation_matrix
-            t_cam_cv = other.t  # CV extrinsic t (not camera center!)
-            
-            # Get camera center in child frame (from CV extrinsics)
-            # In CV: t = -R @ C, so C = -R^T @ t
-            camera_center_in_child = -R_cam.T @ t_cam_cv
-            
-            # Transform camera center from child to parent
-            camera_center_in_parent = (
-                quaternion.rotate_vectors(self.rotation, camera_center_in_child)
-                + self.translation.flatten()
+        if isinstance(other, (Projection, CameraProjection)):
+            # Transform * Projection -> Invalid
+            # 3D->3D * 3D->2D = dimensional mismatch if interpreted strictly as flow?
+            # Guidelines say: Transform * CameraProjection = Forbidden.
+            raise TypeError(
+                "Composition 'Transform * CameraProjection' is invalid. "
+                "Transforms (Spatial) cannot pre-multiply Projections (Sensor). "
+                "Did you mean 'CameraProjection * Transform'?"
             )
-            
-            # Compose rotations
-            composed_rotation = self.rotation * quaternion.from_rotation_matrix(R_cam)
-            composed_R = quaternion.as_rotation_matrix(composed_rotation)
-            
-            # Convert back to CV convention: t = -R @ C
-            composed_t_cv = -composed_R @ camera_center_in_parent
-            
-            # Return new CameraProjection with updated extrinsics
-            return other.__class__(
-                intrinsic_matrix=K,
-                rotation_matrix=composed_R,
-                translation=composed_t_cv,
-                dist_coeffs=other.dist_coeffs,
-                projection_model=other.projection_model,
-                image_size=other.image_size,
-                dtype=self.dtype
-            )
+
+        if isinstance(other, InverseCameraProjection):
+             # Transform * InverseCameraProjection -> Matrix (4x3) unprojection
+             # Handled effectively by MatrixTransform fallback below but let's be explicit if needed.
+             # T * K_inv -> resulting math P_inv @ T_mat (wait, dimensions).
+             # T (4x4) * K_inv (3x3)? K_inv usually treated as 4x4 or 3x4 padded?
+             # InverseCameraProjection.as_matrix returns 3x3 or 4x3?
+             pass
 
         # Fallback to matrix multiplication
         return MatrixTransform(self.as_matrix() @ other.as_matrix(), dtype=self.dtype)
@@ -618,9 +682,18 @@ class Projection(BaseTransform):
         """
         return InverseProjection(self.matrix, dtype=self.dtype)
 
-    def __mul__(self, other: BaseTransform) -> "Projection":
+    def __mul__(self, other: BaseTransform) -> BaseTransform:
         """Compose projection with another transform."""
-        return Projection(self.matrix @ other.as_matrix(), dtype=self.dtype)
+        result_matrix = self.matrix @ other.as_matrix()
+        
+        # If we are composing with a generic MatrixTransform, we lose the strict
+        # Projection semantics (e.g. if it becomes an Image->Image homography).
+        # To remain safe and flexible, return MatrixTransform in this case.
+        if isinstance(other, MatrixTransform):
+            return MatrixTransform(result_matrix, dtype=self.dtype)
+            
+        # Otherwise (e.g. composed with Rigid Transform), we consider it a new Projection
+        return Projection(result_matrix, dtype=self.dtype)
 
     def apply(self, points: np.ndarray) -> np.ndarray:
         """
@@ -776,81 +849,50 @@ class InverseProjection(BaseTransform):
 @register_transform
 class CameraProjection(Projection):
     """
-    A camera projection with explicit intrinsic and extrinsic parameters in OpenCV convention.
+    A camera projection with strict Intrinsic-only parameters.
+    
+    Adheres to the architectural guideline that CameraProjection represents 
+    the internal geometry of the optical sensor (K, D) ONLY.
+    
+    Spatial pose (Extrinsics) must be managed via separate Transform objects.
 
-    The full projection is P = K @ [R | t] where:
+    Structure:
         - K: 3x3 intrinsic matrix (focal length, principal point)
-        - R: 3x3 rotation matrix (world → camera orientation)
-        - t: 3x1 translation vector (world origin in camera coordinates)
-
-    **Convention (OpenCV):**
-    - R: Rotation from world to camera (world_to_cam rotation matrix)
-    - t: Translation from world to camera (world origin position in camera coordinates)
-    - Projection: X_camera = R @ X_world + t, then X_image = K @ X_camera / Z_camera
-
-    **Camera Position in World:**
-    The camera's position in world coordinates is: C_world = -R^T @ t
-
-    Supports distortion coefficients and different projection models:
-        - PINHOLE: Standard pinhole (no distortion)
-        - PINHOLE_POLYNOMIAL: Pinhole with radial/tangential distortion (OpenCV k1,k2,p1,p2,k3,...)
-        - FISHEYE: Fisheye model
-        - OMNIDIRECTIONAL: Omnidirectional model
+        - D: Distortion coefficients (OpenCV convention)
 
     Can be constructed from:
-        - Explicit K, R, t parameters in OpenCV convention (with optional distortion)
-        - A 3x4 or 4x4 projection matrix (decomposed via RQ decomposition)
-        - Flexible aliases: K/intrinsic_matrix, R/rotation_matrix, t/translation, D/dist_coeffs
+        - Explicit K parameters (with optional distortion)
+        - Flexible aliases: K/intrinsic_matrix, D/dist_coeffs
     """
 
     def __init__(
         self,
         intrinsic_matrix: np.ndarray | list | None = None,
-        rotation_matrix: np.ndarray | list | None = None,
-        translation: np.ndarray | list | None = None,
-        matrix: np.ndarray | list | None = None,
         dist_coeffs: list | np.ndarray | None = None,
         projection_model: ProjectionModel | str | None = None,
         image_size: tuple[int, int] | None = None,
         dtype: np.dtype = np.float64,
         # Flexible aliases (OpenCV-style)
         K: np.ndarray | list | None = None,
-        R: np.ndarray | list | None = None,
-        t: np.ndarray | list | None = None,
         D: list | np.ndarray | None = None,
     ):
         """
-        Create a CameraProjection from OpenCV convention parameters.
-
-        Either provide (intrinsic_matrix, rotation_matrix, translation) OR matrix.
-        Supports flexible aliases: K=intrinsic_matrix, R=rotation_matrix, t=translation, D=dist_coeffs.
-
-        **Convention:** All parameters (R, t) follow OpenCV convention (world→camera).
+        Create a CameraProjection (Intrinsic-only).
 
         Args:
             intrinsic_matrix: 3x3 camera intrinsic matrix K.
-            rotation_matrix: 3x3 rotation matrix R (world→camera), or Transform/Rotation object.
-                If Transform/Rotation is provided, it's assumed to be world→camera.
-            translation: 3x1 translation vector t (world origin in camera coordinates).
-            matrix: 3x4 or 4x4 projection matrix (will be decomposed).
             dist_coeffs: Distortion coefficients (OpenCV ordering: k1,k2,p1,p2,k3,...).
             projection_model: Camera model (PINHOLE, PINHOLE_POLYNOMIAL, FISHEYE, etc.).
             image_size: Image dimensions (width, height) in pixels.
             dtype: Data type for matrices.
             K: Alias for intrinsic_matrix.
-            R: Alias for rotation_matrix.
-            t: Alias for translation.
             D: Alias for dist_coeffs.
         """
         self._dtype = dtype
         
-        # Handle aliases: K, R, t, D
+        # Handle aliases
         if K is not None:
             intrinsic_matrix = K
-        if R is not None:
-            rotation_matrix = R
-        if t is not None:
-            translation = t
         if D is not None:
             dist_coeffs = D
         
@@ -865,7 +907,6 @@ class CameraProjection(Projection):
         
         # Handle projection model
         if projection_model is None:
-            # Default: PINHOLE if no distortion, PINHOLE_POLYNOMIAL if distortion present
             if len(self._dist_coeffs) > 0:
                 self._projection_model = ProjectionModel.PINHOLE_POLYNOMIAL
             else:
@@ -875,98 +916,25 @@ class CameraProjection(Projection):
         else:
             self._projection_model = projection_model
 
-        if matrix is not None:
-            # Decompose the provided matrix
-            matrix = np.asarray(matrix, dtype=dtype)
-            if matrix.shape == (4, 4):
-                matrix = matrix[:3, :]
-            elif matrix.shape != (3, 4):
-                raise ValueError(f"Matrix must be 3x4 or 4x4, got {matrix.shape}")
+        if intrinsic_matrix is None:
+             raise ValueError("Must provide 'intrinsic_matrix' or alias 'K'")
 
-            self._intrinsic_matrix, self._rotation_matrix, self._translation = (
-                self._decompose_projection_matrix(matrix)
-            )
-        else:
-            # Use explicit parameters
-            if intrinsic_matrix is None:
-                raise ValueError(
-                    "Must provide either 'matrix' or 'intrinsic_matrix' (or alias 'K')"
-                )
-            
-            # Defaults for R and t
-            if rotation_matrix is None:
-                rotation_matrix = np.eye(3, dtype=dtype)
-            if translation is None:
-                translation = np.zeros(3, dtype=dtype)
+        self._intrinsic_matrix = np.asarray(intrinsic_matrix, dtype=dtype)
+        if self._intrinsic_matrix.shape != (3, 3):
+            raise ValueError(f"Intrinsic matrix must be 3x3, got {self._intrinsic_matrix.shape}")
 
-            self._intrinsic_matrix = np.asarray(intrinsic_matrix, dtype=dtype)
-            
-            # Handle rotation_matrix: can be matrix, Transform, or Rotation
-            if isinstance(rotation_matrix, BaseTransform):
-                # It's a Transform or Rotation object - extract the rotation matrix
-                rotation_matrix = quaternion.as_rotation_matrix(rotation_matrix.rotation)
-            
-            self._rotation_matrix = np.asarray(rotation_matrix, dtype=dtype)
-            self._translation = np.asarray(translation, dtype=dtype).reshape(3, 1)
-
-            # Validate shapes
-            if self._intrinsic_matrix.shape != (3, 3):
-                raise ValueError(
-                    f"Intrinsic matrix must be 3x3, got {self._intrinsic_matrix.shape}"
-                )
-            if self._rotation_matrix.shape != (3, 3):
-                raise ValueError(f"Rotation matrix must be 3x3, got {self._rotation_matrix.shape}")
-
-        # Compute the full projection matrix P = K @ [R | t]
-        extrinsic = np.hstack([self._rotation_matrix, self._translation])
-        projection_3x4 = self._intrinsic_matrix @ extrinsic
-
-        # Initialize parent with 4x4 matrix
-        super().__init__(matrix=projection_3x4, dtype=dtype)
+        # The internal matrix is just K with a [0,0,0,1] row to make it 4x4 (Scale/Intrinsic transform)
+        # We assume points are in Camera Frame already.
+        matrix_4x4 = np.eye(4, dtype=dtype)
+        matrix_4x4[:3, :3] = self._intrinsic_matrix
+        
+        super().__init__(matrix=matrix_4x4, dtype=dtype)
 
     @classmethod
-    def from_intrinsics_and_transform(
-        cls,
-        intrinsic_matrix: np.ndarray | list,
-        extrinsic_transform: "Transform",
-        dtype: np.dtype = np.float64,
-    ) -> "CameraProjection":
-        """
-        Create a CameraProjection from intrinsic matrix and a world→camera Transform.
-
-        This is the recommended way to construct a CameraProjection when you have
-        the camera's pose as a Transform object.
-
-        **Important:** The Transform represents the world→camera extrinsic motion.
-        The camera's position in world is: C_world = -R^T @ t.
-
-        Args:
-            intrinsic_matrix: 3x3 camera intrinsic matrix K.
-            extrinsic_transform: Transform from world to camera frame.
-                The transform directly gives R and t in OpenCV convention.
-            dtype: Data type for matrices.
-
-        Returns:
-            CameraProjection: The complete projection.
-
-        Example:
-            >>> K = np.array([[500, 0, 320], [0, 500, 240], [0, 0, 1]])
-            >>> # Camera 5 meters forward from world origin, looking back
-            >>> # (world origin is 5 meters behind the camera)
-            >>> world_to_camera = tf.Transform(translation=[0, 0, -5])
-            >>> camera = tf.CameraProjection.from_intrinsics_and_transform(K, world_to_camera)
-        """
-        # Extract R and t from the transform (already in world→camera convention)
-        matrix_4x4 = extrinsic_transform.as_matrix()
-        rotation_matrix = matrix_4x4[:3, :3]
-        # The Transform.translation is world→camera translation (OpenCV convention)
-        translation = matrix_4x4[:3, 3:4]
-
-        return cls(
-            intrinsic_matrix=intrinsic_matrix,
-            rotation_matrix=rotation_matrix,
-            translation=translation,
-            dtype=dtype,
+    def from_intrinsics_and_transform(cls, *args, **kwargs):
+        raise NotImplementedError(
+            "CameraProjection is now Intrinsic-only. "
+            "Use separate Transform objects for Extrinsics."
         )
 
     @property
@@ -975,56 +943,34 @@ class CameraProjection(Projection):
         return self._intrinsic_matrix
 
     @property
-    def rotation_matrix(self) -> np.ndarray:
-        """The 3x3 rotation matrix R (world → camera)."""
-        return self._rotation_matrix
+    def fx(self) -> float:
+        """Focal length x."""
+        return float(self._intrinsic_matrix[0, 0])
 
     @property
-    def rotation(self) -> quaternion.quaternion:
-        """The camera orientation as a quaternion (world → camera)."""
-        return quaternion.from_rotation_matrix(self._rotation_matrix)
+    def fy(self) -> float:
+        """Focal length y."""
+        return float(self._intrinsic_matrix[1, 1])
 
     @property
-    def translation(self) -> np.ndarray:
-        """
-        The camera center position (for visualization consistency).
-        
-        Returns the camera's position in world coordinates, matching the convention
-        used by Transform.translation for frame positioning in visualization.
-        
-        This is computed from CV extrinsics as: C = -R^T @ t
-        """
-        # Camera center from CV extrinsics: C = -R^T @ t
-        camera_center = -self._rotation_matrix.T @ self._translation.flatten()
-        return camera_center.reshape(3, 1)
+    def cx(self) -> float:
+        """Principal point x."""
+        return float(self._intrinsic_matrix[0, 2])
 
     @property
-    def extrinsic_transform(self) -> "Transform":
-        """
-        The world → camera Transform (extrinsic parameters as a Transform).
-
-        This Transform converts points from world coordinates to camera coordinates:
-            X_camera = extrinsic_transform.apply(X_world)
-
-        Returns:
-            Transform: The SE(3) transform from world to camera frame.
-        """
-        rot_quat = quaternion.from_rotation_matrix(self._rotation_matrix)
-        return Transform(
-            translation=self._translation.flatten(),
-            rotation=rot_quat,
-            dtype=self.dtype,
-        )
+    def cy(self) -> float:
+        """Principal point y."""
+        return float(self._intrinsic_matrix[1, 2])
 
     @property
     def focal_length(self) -> tuple[float, float]:
         """Focal lengths (fx, fy) from the intrinsic matrix."""
-        return (float(self._intrinsic_matrix[0, 0]), float(self._intrinsic_matrix[1, 1]))
+        return (self.fx, self.fy)
 
     @property
     def principal_point(self) -> tuple[float, float]:
         """Principal point (cx, cy) from the intrinsic matrix."""
-        return (float(self._intrinsic_matrix[0, 2]), float(self._intrinsic_matrix[1, 2]))
+        return (self.cx, self.cy)
     
     @property
     def dist_coeffs(self) -> np.ndarray:
@@ -1056,84 +1002,14 @@ class CameraProjection(Projection):
     def D(self) -> np.ndarray:
         """Alias for dist_coeffs (OpenCV-style)."""
         return self._dist_coeffs
-    
-    @property
-    def R(self) -> np.ndarray:
-        """Alias for rotation_matrix (OpenCV-style)."""
-        return self._rotation_matrix
-    
-    @property
-    def t(self) -> np.ndarray:
-        """Alias for translation (OpenCV-style). Returns flattened 3-element array."""
-        return self._translation.flatten()
 
-    def _decompose_projection_matrix(
-        self, projection_matrix: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Decompose a 3x4 projection matrix into K, R, t using RQ decomposition.
 
-        P = K @ [R | t]
-        P[:3,:3] = K @ R
-
-        Returns:
-            Tuple of (K, R, t)
-        """
-        from scipy.linalg import rq
-
-        # Extract M = P[:3,:3] = K @ R
-        M = projection_matrix[:3, :3]
-
-        # RQ decomposition: M = R @ Q where R is upper triangular, Q is orthogonal
-        # In our case: M = K @ R_rot, so we want K (upper tri) and R_rot (rotation)
-        intrinsic_matrix, rotation_matrix = rq(M)
-
-        # Ensure K has positive diagonal by flipping signs
-        # For each negative diagonal element, flip the sign of that row of K
-        # and the corresponding column of R
-        for i in range(3):
-            if intrinsic_matrix[i, i] < 0:
-                intrinsic_matrix[i, :] *= -1
-                rotation_matrix[:, i] *= -1
-
-        # Normalize K so that K[2,2] = 1
-        scale = intrinsic_matrix[2, 2]
-        if abs(scale) > 1e-10:
-            intrinsic_matrix = intrinsic_matrix / scale
-
-        # Ensure R is a proper rotation (det = +1)
-        if np.linalg.det(rotation_matrix) < 0:
-            rotation_matrix = -rotation_matrix
-            intrinsic_matrix = -intrinsic_matrix
-
-        # Compute translation: P[:3,3] = K @ t, so t = K^-1 @ P[:3,3]
-        translation = np.linalg.solve(intrinsic_matrix, projection_matrix[:3, 3])
-        translation = translation.reshape(3, 1)
-
-        return (
-            intrinsic_matrix.astype(self._dtype),
-            rotation_matrix.astype(self._dtype),
-            translation.astype(self._dtype),
-        )
-
-    def inverse(self) -> "InverseProjection":
-        """
-        Returns an InverseProjection for unprojection.
-
-        Note: The structured K, R, t parameters are not preserved in the inverse.
-        If you need to recover a CameraProjection from an InverseProjection,
-        call inv_proj.inverse() to get a Projection, then create a new
-        CameraProjection with CameraProjection(matrix=proj.as_matrix()).
-        """
-        return InverseProjection(self.matrix, dtype=self.dtype)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize camera projection to a JSON-compatible dictionary."""
         result = {
             "type": "CameraProjection",
             "intrinsic_matrix": self._intrinsic_matrix.tolist(),
-            "rotation_matrix": self._rotation_matrix.tolist(),
-            "translation": self._translation.flatten().tolist(),
             "dist_coeffs": self._dist_coeffs.tolist(),
             "projection_model": self._projection_model.value,
             "dtype": np.dtype(self.dtype).name,
@@ -1154,8 +1030,6 @@ class CameraProjection(Projection):
         
         return cls(
             intrinsic_matrix=np.array(data["intrinsic_matrix"]),
-            rotation_matrix=np.array(data["rotation_matrix"]),
-            translation=np.array(data["translation"]),
             dist_coeffs=dist_coeffs,
             projection_model=projection_model_str,
             image_size=image_size,
@@ -1165,13 +1039,88 @@ class CameraProjection(Projection):
     def __repr__(self) -> str:
         fx, fy = self.focal_length
         cx, cy = self.principal_point
-        t = self._translation.flatten()
-        q = self.rotation
         return (
-            f"CameraProjection(fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f}, "
-            f"t=[{t[0]:.2f}, {t[1]:.2f}, {t[2]:.2f}], "
-            f"R=[{q.w:.3f}, {q.x:.3f}, {q.y:.3f}, {q.z:.3f}])"
+            f"CameraProjection(fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f})"
         )
+
+    def inverse(self) -> "InverseCameraProjection":
+        """
+        Returns an InverseCameraProjection for unprojection.
+        
+        Preserves the camera parameters (intrinsics) in the inverse object.
+        """
+        return InverseCameraProjection(self)
+
+
+@register_transform
+class InverseCameraProjection(InverseProjection):
+    """
+    The inverse of a CameraProjection.
+    
+    Preserves the internal CameraProjection instance to maintain access to
+    intrinsics (K) and distortion coefficients.
+    """
+    
+    def __init__(self, camera_projection: CameraProjection):
+        """
+        Create an InverseCameraProjection.
+        
+        Args:
+            camera_projection: The original CameraProjection instance.
+        """
+        self._camera_projection = camera_projection
+        # Initialize parent with the matrix (will be pseudo-inverted by parent's as_matrix)
+        super().__init__(original_matrix=camera_projection.matrix, dtype=camera_projection.dtype)
+
+    @property
+    def camera_projection(self) -> CameraProjection:
+        """The original CameraProjection instance."""
+        return self._camera_projection
+
+    # Shortcuts exposing the camera parameters
+    @property
+    def fx(self) -> float:
+        return self._camera_projection.fx
+
+    @property
+    def fy(self) -> float:
+        return self._camera_projection.fy
+
+    @property
+    def cx(self) -> float:
+        return self._camera_projection.cx
+
+    @property
+    def cy(self) -> float:
+        return self._camera_projection.cy
+
+    @property
+    def intrinsic_matrix(self) -> np.ndarray:
+        return self._camera_projection.intrinsic_matrix
+
+    def inverse(self) -> CameraProjection:
+        """Returns the original CameraProjection."""
+        return self._camera_projection
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary using the contained CameraProjection."""
+        return {
+            "type": "InverseCameraProjection",
+            "camera_projection": self._camera_projection.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "InverseCameraProjection":
+        """Deserialize from dictionary."""
+        cam_data = data["camera_projection"]
+        if cam_data.get("type") != "CameraProjection":
+            cam_data["type"] = "CameraProjection"
+            
+        camera_proj = CameraProjection.from_dict(cam_data)
+        return cls(camera_proj)
+
+    def __repr__(self) -> str:
+        return f"InverseCameraProjection({self._camera_projection})"
 
 
 class Pose:
@@ -1403,13 +1352,13 @@ class TransformGraph:
 
     @property
     def edges(self) -> list[tuple[str, str]]:
-        """Returns list of all added edges as (parent, child) tuples."""
+        """Returns list of all added edges as (reference_frame, target_frame) tuples."""
         result = []
         for u, v, data in self._graph.edges(data=True):
             if not data.get("is_cache", False):
-                parent = data["parent"]
-                child = v if parent == u else u
-                result.append((parent, child))
+                reference_frame = data["reference_frame"]
+                target_frame = v if reference_frame == u else u
+                result.append((reference_frame, target_frame))
         return result
 
     def has_frame(self, frame_id: str) -> bool:
@@ -1430,17 +1379,17 @@ class TransformGraph:
         Add a transform between two frames.
 
         API: add_transform(source, target, transform)
-        - SOURCE: The "Child" frame being placed.
-        - TARGET: The "Parent" frame (reference frame).
-        - TRANSFORM: Source→Target operator (converts source coords to target coords).
+        - SOURCE: The domain frame (where vectors start).
+        - TARGET: The codomain/reference frame (where vectors end).
+        - TRANSFORM: Source→Target operator.
 
-        The transform represents the Source frame's pose relative to the Target frame.
-        To convert a point from Source to Target: P_target = transform * P_source
+        The transform maps Source coordinates to Target coordinates:
+        P_target = transform * P_source
 
         Args:
-            source_frame: The child frame ID (frame being placed).
-            target_frame: The parent frame ID (reference frame).
-            transform: The transform from source to target (T_source_to_target).
+            source_frame: The source/domain frame ID.
+            target_frame: The target/reference frame ID.
+            transform: The transform from source to target.
 
         Raises:
             ValueError: If an edge already exists between these frames.
@@ -1451,13 +1400,14 @@ class TransformGraph:
                 "Use update_transform() to modify it."
             )
 
-        # Store edge from target→source (parent→child direction)
-        # But the transform stored is source→target
+        # Store edge between nodes.
+        # We store "reference_frame" to indicate which node is the Target (Codomain) of the transform.
+        # If reference_frame = target_frame, then the transform is source -> target.
         self._graph.add_edge(
             target_frame,
             source_frame,
             transform=transform,
-            parent=target_frame,  # Target is the parent
+            reference_frame=target_frame, 
             is_cache=False,
             weight=self.ADDED_EDGE_WEIGHT,
         )
@@ -1474,8 +1424,8 @@ class TransformGraph:
         Automatically invalidates any cached shortcuts that depend on this edge.
 
         Args:
-            source_frame: The child frame ID (frame being placed).
-            target_frame: The parent frame ID (reference frame).
+            source_frame: The source frame ID.
+            target_frame: The target frame ID.
             transform: The new transform from source to target.
 
         Raises:
@@ -1492,7 +1442,7 @@ class TransformGraph:
 
         # Update the transform
         self._graph[target_frame][source_frame]["transform"] = transform
-        self._graph[target_frame][source_frame]["parent"] = target_frame
+        self._graph[target_frame][source_frame]["reference_frame"] = target_frame
 
     def remove_transform(self, frame_a: str, frame_b: str) -> None:
         """
@@ -1548,16 +1498,28 @@ class TransformGraph:
         if self._graph.has_edge(source_frame, target_frame):
             edge_data = self._graph[source_frame][target_frame]
             transform = edge_data["transform"]
-            parent = edge_data["parent"]
+            reference_frame = edge_data["reference_frame"]
 
-            # Edge direction: parent→child (target→source)
-            # Transform: child→parent (source→target)
-            # If traversing parent→child: use inverse
-            # If traversing child→parent: use direct
-            if parent == source_frame:
-                # source is parent, going down to child (target), use inverse
+            # Store Direction: reference_frame->neighbor (opposite of reference_frame) is direction of transform?
+            # No, add_transform(Source, Target, T). Edge Target->Source. reference_frame=Target.
+            # T maps Source->Target.
+            
+            # If traversing reference_frame -> other (Target -> Source):
+            # We want T_target_to_source.
+            # Stored is T_source_to_target.
+            # So traverse down (Ref->Source) = Inverse.
+            
+            # If traversing other -> reference_frame (Source -> Target):
+            # We want T_source_to_target.
+            # Stored is T_source_to_target.
+            # So traverse up (Source->Ref) = Direct.
+            
+            if reference_frame == source_frame:
+                # source is reference_frame (Target). Going to target_frame (Source).
+                # Direction: Target -> Source.
+                # Use inverse.
                 return transform.inverse()
-            return transform  # source is child, going up to parent (target), use direct
+            return transform  # source is Source. Going to reference_frame (Target). Use direct.
 
         # Find shortest path
         try:
@@ -1575,7 +1537,7 @@ class TransformGraph:
 
             edge_data = self._graph[current_frame][next_frame]
             transform = edge_data["transform"]
-            parent = edge_data["parent"]
+            reference_frame = edge_data["reference_frame"]
 
             # Track added edges for dependency mapping
             if not edge_data.get("is_cache", False):
@@ -1583,18 +1545,17 @@ class TransformGraph:
                 edge_key = tuple(sorted([current_frame, next_frame]))
                 added_edges.append(edge_key)
 
-            # Edge direction: parent→child
-            # Transform: child→parent
-            # If current is parent: use inverse
-            # If current is child: use direct
-            if parent == current_frame:
-                # Going down the tree (parent→child), use inverse
+            # Traversal Logic:
+            # If current is Ref (Target): Going to Source. Use Inverse.
+            # If current is Source: Going to Ref (Target). Use Direct.
+            if reference_frame == current_frame:
                 step_transform = transform.inverse()
             else:
-                # Going up the tree (child→parent), use direct
                 step_transform = transform
 
-            composed_transform = composed_transform * step_transform
+            # Compose in reverse order: new_step * accumulated
+            # This ensures: (T3 * T2 * T1) transforms correctly
+            composed_transform = step_transform * composed_transform
 
         # Cache the result as a shortcut edge
         self._add_cache_edge(source_frame, target_frame, composed_transform, added_edges)
@@ -1614,138 +1575,189 @@ class TransformGraph:
         The transform is source→target, edge goes from target→source.
         """
         self._graph.add_edge(
-            target_frame,  # Edge from parent (target)
-            source_frame,  # to child (source)
+            target_frame,  # Edge from ref (target)
+            source_frame,  # to source
             transform=transform,  # source→target transform
-            parent=target_frame,  # target is the parent
+            reference_frame=target_frame,  # target is the reference_frame
             is_cache=True,
             weight=self.CACHED_EDGE_WEIGHT,
         )
 
-        # Register this cache edge as dependent on all added edges in the path
+        # Register cache dependency for all constituent edges
         cache_edge = tuple(sorted([source_frame, target_frame]))
         for added_edge in added_edges:
             if added_edge not in self._dependency_map:
                 self._dependency_map[added_edge] = []
-            if cache_edge not in self._dependency_map[added_edge]:
-                self._dependency_map[added_edge].append(cache_edge)
+            self._dependency_map[added_edge].append(cache_edge)
 
     def _invalidate_caches_for_edge(self, frame_a: str, frame_b: str) -> None:
-        """Invalidate all cache edges that depend on an added edge."""
+        """
+        Remove all cached edges that depend on the edge (frame_a, frame_b).
+        """
         edge_key = tuple(sorted([frame_a, frame_b]))
-
-        if edge_key not in self._dependency_map:
-            return
-
-        # Remove all dependent cache edges
-        cache_edges_to_remove = self._dependency_map[edge_key].copy()
-        for cache_edge in cache_edges_to_remove:
-            cache_u, cache_v = cache_edge
-            if self._graph.has_edge(cache_u, cache_v):
-                edge_data = self._graph[cache_u][cache_v]
-                if edge_data.get("is_cache", False):
+        if edge_key in self._dependency_map:
+            for cache_u, cache_v in self._dependency_map[edge_key]:
+                if self._graph.has_edge(cache_u, cache_v) and self._graph[cache_u][cache_v].get("is_cache", False):
                     self._graph.remove_edge(cache_u, cache_v)
+            # Clear dependencies for this edge
+            del self._dependency_map[edge_key]
 
-        # Clear the dependency list
-        del self._dependency_map[edge_key]
-
-        # Clean up other dependency entries that referenced removed cache edges
-        for added_edge, cache_list in list(self._dependency_map.items()):
-            self._dependency_map[added_edge] = [
-                ce for ce in cache_list if ce not in cache_edges_to_remove
-            ]
-
-    def clear_cache(self) -> None:
-        """Remove all cached shortcut edges, forcing recomputation on next query."""
-        cache_edges = [
-            (u, v) for u, v, data in self._graph.edges(data=True) if data.get("is_cache", False)
-        ]
-
-        for u, v in cache_edges:
-            self._graph.remove_edge(u, v)
-
-        self._dependency_map.clear()
-
-    def get_connected_nodes(self, node: str) -> list[str]:
+    def is_projection_frame(self, frame_id: str) -> bool:
         """
-        Get all nodes connected to the given node (connected component).
-
-        Args:
-            node: The node to start from.
-
-        Returns:
-            List[str]: List of connected node IDs (including the start node).
-
-        Raises:
-            ValueError: If the node is not in the graph.
+        Check if a frame is a 2D projection frame (e.g., an Image frame).
+        
+        Rule: A frame is a projection frame if ALL edges connected to it treat it as a projection space.
+        - If transform maps INTO frame (frame is Target), transform must be a Projection.
+        - If transform maps OUT OF frame (frame is Source), transform must be an InverseProjection.
         """
-        if node not in self._graph:
-            raise ValueError(f"Frame '{node}' not found in graph.")
-        return list(nx.node_connected_component(self._graph, node))
-
-    def get_connected_components(self) -> list[list[str]]:
-        """
-        Get all connected components in the graph.
-
-        Returns:
-            List[List[str]]: List of lists, where each inner list contains
-                             frame IDs belonging to a connected component.
-        """
-        return [list(c) for c in nx.connected_components(self._graph)]
-
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Serialize the graph to a JSON-compatible dictionary.
-
-        Only ground-truth edges are serialized; cache edges are transient.
-        """
-        edges = []
-        for u, v, data in self._graph.edges(data=True):
-            if data.get("is_cache", False):
-                continue  # Skip cache edges
-
-            parent = data["parent"]
-            # Edge goes parent→child, find child
-            child = v if parent == u else u
+        if frame_id not in self._graph:
+            return False
             
-            edges.append(
-                {
-                    "source": child,  # source (child) frame
-                    "target": parent,  # target (parent) frame
-                    "transform": data["transform"].to_dict(),  # source→target transform
-                }
-            )
+        neighbors = list(self._graph.neighbors(frame_id))
+        if not neighbors:
+            return False
+            
+        for neighbor in neighbors:
+            edge_data = self._graph[frame_id][neighbor]
+            transform = edge_data["transform"]
+            reference_frame = edge_data["reference_frame"]
+            
+            # Use 'reference_frame' to determine direction. 
+            # reference_frame is the TARGET of the transform.
+            
+            if reference_frame == frame_id:
+                # Transform is Neighbor -> Frame (Source -> Target)
+                # For Frame to be 2D, this must be a Projection (3D -> 2D)
+                if not isinstance(transform, Projection):
+                    return False
+            else:
+                # Transform is Frame -> Neighbor (Source -> Target)
+                # For Frame to be 2D, this must be an InverseProjection (2D -> 3D)
+                if not isinstance(transform, InverseProjection):
+                    return False
+                    
+        return True
 
-        return {
-            "version": "1.0",
-            "edges": edges,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TransformGraph":
+    def _get_camera_intrinsics_and_pose(self, image_frame: str) -> tuple[np.ndarray, str]:
         """
-        Deserialize a graph from a dictionary.
-
-        Args:
-            data: Dictionary previously created by to_dict().
-
+        Helper: Find the connected 3D camera frame and K matrix for an image frame.
+        
         Returns:
-            TransformGraph: Reconstructed graph.
+            (K, camera_frame_id)
         """
-        graph = cls()
+        if image_frame not in self._graph:
+             raise ValueError(f"Frame '{image_frame}' not found.")
+             
+        for neighbor in self._graph.neighbors(image_frame):
+            edge_data = self._graph[image_frame][neighbor]
+            transform = edge_data["transform"]
+            reference_frame = edge_data["reference_frame"]
+            
+            K = None
+            cam_frame = None
+            
+            # Logic: If frame is projection frame, the neighbor must be the camera
+            if isinstance(transform, CameraProjection):
+                if reference_frame == image_frame: # Proj maps Neighbor->Image
+                    K = transform.intrinsic_matrix
+                    cam_frame = neighbor
+            
+            elif isinstance(transform, InverseCameraProjection):
+                if reference_frame != image_frame: # InvProj maps Image->Neighbor
+                    K = transform.intrinsic_matrix
+                    cam_frame = neighbor
+            
+            if K is not None:
+                return K, cam_frame
 
-        for edge_data in data.get("edges", []):
-            source = edge_data["source"]
-            target = edge_data["target"]
-            transform = deserialize_transform(edge_data["transform"])
-            graph.add_transform(source, target, transform)
+        raise ValueError(f"Frame '{image_frame}' is not a valid projection frame connected to a camera.")
 
-        return graph
 
-    def __repr__(self) -> str:
-        num_frames = self._graph.number_of_nodes()
-        num_edges = sum(
-            1 for _, _, d in self._graph.edges(data=True) if not d.get("is_cache", False)
-        )
-        num_cached = sum(1 for _, _, d in self._graph.edges(data=True) if d.get("is_cache", False))
-        return f"TransformGraph(frames={num_frames}, edges={num_edges}, cached={num_cached})"
+
+    def get_essential_matrix(self, image_frame_1: str, image_frame_2: str) -> np.ndarray:
+        """
+        Compute the Essential Matrix E between two image frames.
+        
+        E = [t]_x R
+        where R, t describe method to transform points from Camera 1 to Camera 2.
+        X2 = R X1 + t.
+        """
+        _, c1 = self._get_camera_intrinsics_and_pose(image_frame_1)
+        _, c2 = self._get_camera_intrinsics_and_pose(image_frame_2)
+        
+        # Get transform from C1 to C2
+        # T_c1_to_c2: converts X_c1 to X_c2.
+        T_12 = self.get_transform(c1, c2)
+        if not isinstance(T_12, Transform):
+             raise ValueError(f"Transform between '{c1}' and '{c2}' is not a spatial Transform.")
+             
+        R = quaternion.as_rotation_matrix(T_12.rotation)
+        t = T_12.translation.flatten()
+        
+        # Skew symmetric matrix of t
+        t_x = skew(t)
+        
+        return t_x @ R
+
+    def get_fundamental_matrix(self, image_frame_1: str, image_frame_2: str) -> np.ndarray:
+        """
+        Compute the Fundamental Matrix F between two image frames.
+        
+        F = K2^-T E K1^-1
+        x2^T F x1 = 0
+        """
+        K1, _ = self._get_camera_intrinsics_and_pose(image_frame_1)
+        K2, _ = self._get_camera_intrinsics_and_pose(image_frame_2)
+        
+        E = self.get_essential_matrix(image_frame_1, image_frame_2)
+        
+        K1_inv = np.linalg.inv(K1)
+        K2_inv = np.linalg.inv(K2)
+        
+        return K2_inv.T @ E @ K1_inv
+
+    def get_homography(
+        self, 
+        image_frame_1: str, 
+        image_frame_2: str, 
+        plane_normal: np.ndarray, 
+        plane_distance: float
+    ) -> np.ndarray:
+        """
+        Compute Homography H mapping pixels from image 1 to image 2 induced by a plane.
+        
+        x2 ~ H x1
+        
+        Plane equation in Camera 1 frame: n^T X = d
+        H = K2 (R + t n^T / d) K1^-1
+        
+        Args:
+            image_frame_1: Source image frame.
+            image_frame_2: Target image frame.
+            plane_normal: Normal vector of the plane in Camera 1 frame (3,).
+            plane_distance: Distance to the plane in Camera 1 frame (scalar).
+        """
+        K1, c1 = self._get_camera_intrinsics_and_pose(image_frame_1)
+        K2, c2 = self._get_camera_intrinsics_and_pose(image_frame_2)
+        
+        # T_12: C1 -> C2
+        T_12 = self.get_transform(c1, c2)
+        R = quaternion.as_rotation_matrix(T_12.rotation)
+        t = T_12.translation.flatten().reshape(3, 1)
+        
+        n = np.asarray(plane_normal).reshape(3, 1)
+        d = float(plane_distance)
+        
+        H_euclidean = R + (t @ n.T) / d
+        
+        return K2 @ H_euclidean @ np.linalg.inv(K1)
+        
+    @staticmethod
+    def estimate_skew(intrinsic_matrix: np.ndarray) -> float:
+        """
+        Estimate the skew parameter from an intrinsic matrix K.
+        
+        K = [[fx, s, cx], [0, fy, cy], [0, 0, 1]]
+        Returns s.
+        """
+        return float(intrinsic_matrix[0, 1])

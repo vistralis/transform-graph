@@ -4,13 +4,14 @@ Visualization module for TransformGraph using Plotly.
 
 import networkx as nx
 import numpy as np
+import quaternion
 
 try:
     import plotly.graph_objects as go
 except ImportError:
     go = None
 
-from tgraph.transform import CameraProjection, Identity, InverseProjection, Projection, Transform, TransformGraph
+from tgraph.transform import CameraProjection, Identity, InverseCameraProjection, InverseProjection, Projection, Transform, TransformGraph
 
 
 def _check_plotly():
@@ -54,9 +55,7 @@ def _create_axis_traces(
     """
     Create RGB axes for a specific transform.
     """
-    # Get origin - use .translation property for consistency where available
-    # (For CameraProjection, .translation returns camera center, not K@t)
-    # For MatrixTransform and others without .translation, extract from matrix
+    # Get origin
     if hasattr(transform, 'translation'):
         origin = transform.translation.flatten()
     else:
@@ -65,15 +64,7 @@ def _create_axis_traces(
     
     # Get rotation matrix
     transform_matrix = transform.as_matrix()
-    if transform_matrix.shape == (4, 4):
-        rotation_matrix = transform_matrix[:3, :3]
-    else:
-        # For projections (3x4 or 4x4 projection matrices), extract rotation differently
-        # For CameraProjection, use the rotation_matrix property if available
-        if hasattr(transform, 'rotation_matrix'):
-            rotation_matrix = transform.rotation_matrix
-        else:
-            rotation_matrix = np.eye(3)
+    rotation_matrix = transform_matrix[:3, :3]
 
     # Axis end points in local frame
     x_end_local = np.array([scale, 0, 0])
@@ -86,113 +77,73 @@ def _create_axis_traces(
     z_end = origin + rotation_matrix @ z_end_local
 
     traces = []
-
-    # Common attributes
     line_width = 5
 
     # X Axis (Red)
-    traces.append(
-        go.Scatter3d(
-            x=[origin[0], x_end[0]],
-            y=[origin[1], x_end[1]],
-            z=[origin[2], x_end[2]],
-            mode="lines",
-            line=dict(color="red", width=line_width),
-            name=f"{name}_X",
-            hoverinfo="text",
-            text=f"{name} X",
-            showlegend=False,
-            visible=visible,
-        )
-    )
+    traces.append(go.Scatter3d(
+        x=[origin[0], x_end[0]], y=[origin[1], x_end[1]], z=[origin[2], x_end[2]],
+        mode="lines", line=dict(color="red", width=line_width),
+        name=f"{name}_X", hoverinfo="text", text=f"{name} X", showlegend=False, visible=visible
+    ))
 
     # Y Axis (Green)
-    traces.append(
-        go.Scatter3d(
-            x=[origin[0], y_end[0]],
-            y=[origin[1], y_end[1]],
-            z=[origin[2], y_end[2]],
-            mode="lines",
-            line=dict(color="green", width=line_width),
-            name=f"{name}_Y",
-            hoverinfo="text",
-            text=f"{name} Y",
-            showlegend=False,
-            visible=visible,
-        )
-    )
+    traces.append(go.Scatter3d(
+        x=[origin[0], y_end[0]], y=[origin[1], y_end[1]], z=[origin[2], y_end[2]],
+        mode="lines", line=dict(color="green", width=line_width),
+        name=f"{name}_Y", hoverinfo="text", text=f"{name} Y", showlegend=False, visible=visible
+    ))
 
     # Z Axis (Blue)
-    traces.append(
-        go.Scatter3d(
-            x=[origin[0], z_end[0]],
-            y=[origin[1], z_end[1]],
-            z=[origin[2], z_end[2]],
-            mode="lines",
-            line=dict(color="blue", width=line_width),
-            name=f"{name}_Z",
-            hoverinfo="text",
-            text=f"{name} Z",
-            showlegend=False,
-            visible=visible,
-        )
-    )
+    traces.append(go.Scatter3d(
+        x=[origin[0], z_end[0]], y=[origin[1], z_end[1]], z=[origin[2], z_end[2]],
+        mode="lines", line=dict(color="blue", width=line_width),
+        name=f"{name}_Z", hoverinfo="text", text=f"{name} Z", showlegend=False, visible=visible
+    ))
 
-    # Origin marker (for hover info)
-    traces.append(
-        go.Scatter3d(
-            x=[origin[0]],
-            y=[origin[1]],
-            z=[origin[2]],
-            mode="markers",
-            marker=dict(size=3, color="black"),
-            name=name,
-            hoverinfo="text",
-            text=name,
-            showlegend=True,
-            visible=visible,
-        )
-    )
+    # Origin marker
+    traces.append(go.Scatter3d(
+        x=[origin[0]], y=[origin[1]], z=[origin[2]],
+        mode="markers", marker=dict(size=3, color="black"),
+        name=name, hoverinfo="text", text=name, showlegend=True, visible=visible
+    ))
 
     return traces
 
 
 def _create_frustum_traces(
-    camera: CameraProjection, scale: float = 1.0, name: str = "", visible: bool = True
+    intrinsic: CameraProjection, 
+    pose: Transform, 
+    scale: float = 1.0, 
+    name: str = "", 
+    visible: bool = True
 ) -> list[go.Scatter3d]:
     """
     Create a frustum pyramid for a CameraProjection.
-    
-    The frustum shows the camera's field of view as a pyramid from the camera center
-    to an image plane at depth 'scale'.
-    
+
     Args:
-        camera: CameraProjection with extrinsics defining camera pose
-        scale: Depth of the frustum (distance from camera center to image plane)
-        name: Label for the frustum
-        visible: Whether the frustum is initially visible
+        intrinsic: CameraProjection (intrinsic parameters).
+        pose: Transform (Camera to World pose).
+        scale: Depth of the frustum (distance from camera center to image plane).
+        name: Label for the frustum.
+        visible: Whether the frustum is initially visible.
     """
-    # 1. Get camera position and orientation
-    # camera.translation gives us the camera center in world coordinates
-    camera_center = camera.translation.flatten()
-    
-    # Camera orientation (camera → world rotation)
-    R_world_to_cam = camera.rotation_matrix
-    R_cam_to_world = R_world_to_cam.T  # Inverse of rotation
+    # 1. Get camera position and orientation from Pose (Cam -> World)
+    camera_center = pose.translation.flatten()
+    R_cam_to_world = quaternion.as_rotation_matrix(pose.rotation)
 
     # 2. Define image corners in pixel coordinates
-    if camera.image_size is not None:
-        w, h = camera.image_size
+    if intrinsic.image_size is not None:
+        w, h = intrinsic.image_size
     else:
         # Infer from principal point (assume it's roughly at image center)
-        cx, cy = camera.principal_point
+        cx, cy = intrinsic.principal_point
         w = int(2 * cx) if cx > 0 else 640
         h = int(2 * cy) if cy > 0 else 480
 
     corners_2d = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float64)
 
     # 3. Unproject corners to normalized camera frame directions
-    K = camera.intrinsic_matrix
+    K = intrinsic.intrinsic_matrix
     K_inv = np.linalg.inv(K)
 
     corners_cam_frame = []
@@ -204,44 +155,30 @@ def _create_frustum_traces(
         corners_cam_frame.append(ray_dir)
 
     # 4. Transform corners from camera frame to world frame
+    # X_world = C + R_cam_to_world @ X_cam
     corners_world = [camera_center + R_cam_to_world @ p for p in corners_cam_frame]
 
     traces = []
 
-    # Draw pyramid edges from camera center to each corner of the image plane
+    # Draw pyramid edges
     for p in corners_world:
-        traces.append(
-            go.Scatter3d(
-                x=[camera_center[0], p[0]],
-                y=[camera_center[1], p[1]],
-                z=[camera_center[2], p[2]],
-                mode="lines",
-                line=dict(color="orange", width=2),
-                showlegend=False,
-                visible=visible,
-                hoverinfo="none",
-            )
-        )
+        traces.append(go.Scatter3d(
+            x=[camera_center[0], p[0]], y=[camera_center[1], p[1]], z=[camera_center[2], p[2]],
+            mode="lines", line=dict(color="orange", width=2),
+            showlegend=False, visible=visible, hoverinfo="none"
+        ))
 
-    # Draw the image plane rectangle at the frustum's far end
+    # Draw the image plane rectangle
     cx = [p[0] for p in corners_world] + [corners_world[0][0]]
     cy = [p[1] for p in corners_world] + [corners_world[0][1]]
     cz = [p[2] for p in corners_world] + [corners_world[0][2]]
 
-    traces.append(
-        go.Scatter3d(
-            x=cx,
-            y=cy,
-            z=cz,
-            mode="lines",
-            line=dict(color="orange", width=3),
-            name=f"{name}_frustum",
-            showlegend=False,
-            visible=visible,
-            hoverinfo="text",
-            text=f"{name} Frustum",
-        )
-    )
+    traces.append(go.Scatter3d(
+        x=cx, y=cy, z=cz,
+        mode="lines", line=dict(color="orange", width=3),
+        name=f"{name}_frustum", showlegend=False, visible=visible, hoverinfo="text",
+        text=f"{name} Frustum"
+    ))
 
     return traces
 
@@ -257,19 +194,6 @@ def visualize_transform_graph(
 ) -> "go.Figure":
     """
     Visualize the transform graph in 3D.
-
-    Args:
-        transform_graph: The TransformGraph instance.
-        root_frame: The frame to use as the origin (0,0,0).
-                    If None, determined heuristically.
-        axis_scale: Length of the RGB axes for each frame.
-        show_connections: Whether to draw lines between connected frames.
-        show_frustums: Whether to show camera frustums for CameraProjection frames.
-        frustum_scale: Depth of the frustum visualization.
-        title: Plot title.
-
-    Returns:
-        plotly.graph_objects.Figure
     """
     _check_plotly()
 
@@ -283,57 +207,102 @@ def visualize_transform_graph(
         raise ValueError(f"Root frame '{root_frame}' not found in graph.")
 
     traces = []
-
-    # Map frame_id -> Transform (relative to root)
     frame_transforms = {}
+    projection_map_2d_to_3d = {}
 
-    # Calculate global transforms for all frames reachable from root
-    # Special handling: If a frame is connected via a Projection edge (which is non-invertible),
-    # use the parent frame's position instead
-    projection_child_to_parent = {}  # Maps child -> parent for Projection edges
-    
+    # Pre-pass: Identify projection edges which are directional (3D -> 2D)
+    # We want 2D frames (Image) to use the position of 3D frames (Camera) for visualization
     for u, v, edge_data in transform_graph.graph.edges(data=True):
-        if isinstance(edge_data["transform"], (Projection, InverseProjection)):
-            # The edge stores (u, v) with a parent attribute
-            # parent attribute tells us which side is the TARGET frame
-            parent_frame = edge_data.get("parent")  # TARGET frame
-            # The other node is the SOURCE frame
-            source_frame = v if parent_frame == u else u
-            # For visualization: the projection's target (2D) uses the source's position
-            projection_child_to_parent[parent_frame] = source_frame
-    
-    # We rely on the graph's internal pathfinding and caching
+        tr = edge_data["transform"]
+        if isinstance(tr, (Projection, InverseProjection)):
+            reference_frame = edge_data.get("reference_frame")
+            other_frame = v if reference_frame == u else u
+            
+            target_2d = None
+            source_3d = None
+            
+            # Logic: Identify which frame is 2D and which is 3D
+            if isinstance(tr, InverseProjection) and not isinstance(tr, CameraProjection):
+                # InverseProjection (Source=2D, Target=3D)
+                # Edge: reference_frame=Target(3D), other=Source(2D)
+                target_2d = other_frame
+                source_3d = reference_frame
+            else:
+                # Projection/CameraProjection (Source=3D, Target=2D)
+                # Edge: reference_frame=Target(2D), other=Source(3D)
+                target_2d = reference_frame
+                source_3d = other_frame
+            
+            if target_2d and source_3d:
+                projection_map_2d_to_3d[target_2d] = source_3d
+
+    # Compute global transforms relative to root
     for frame_id in transform_graph.frames:
         try:
-            # get_transform(frame_id, root_frame) gives us frame→root
-            # i.e., the transform that places the frame relative to root
-            # Its .translation property gives frame's origin in root coords
             if frame_id == root_frame:
-                # Root frame is at origin with identity rotation
                 transform = Identity()
             else:
-                # If this frame is a Projection target, use source's position instead
-                # (Projections map 3D -> 2D, so the 2D frame has same origin as 3D source)
-                if frame_id in projection_child_to_parent:
-                    # Use parent (source) frame's position
-                    parent_frame = projection_child_to_parent[frame_id]
-                    transform = transform_graph.get_transform(parent_frame, root_frame)
-                else:
-                    transform = transform_graph.get_transform(frame_id, root_frame)
+                target_frame_for_transform = frame_id
+                if frame_id in projection_map_2d_to_3d:
+                    target_frame_for_transform = projection_map_2d_to_3d[frame_id]
+                
+                transform = transform_graph.get_transform(target_frame_for_transform, root_frame)
             
             frame_transforms[frame_id] = transform
         except ValueError:
-            # Frame is part of a disconnected component not reachable from root
             pass
 
-    # Create traces for frames
+    # Create traces
     for frame_id, transform in frame_transforms.items():
-        # Always draw axes
         traces.extend(_create_axis_traces(transform, scale=axis_scale, name=frame_id))
 
-        # If it's a camera projection, optionally draw frustum
-        if show_frustums and isinstance(transform, CameraProjection):
-            traces.extend(_create_frustum_traces(transform, scale=frustum_scale, name=frame_id))
+        if show_frustums:
+            # Check for camera edges connected to this frame (this frame as 3D Camera)
+            for u, v, edge_data in transform_graph.graph.edges(data=True):
+                # We need to determine if frame_id is the 3D Camera side of this edge.
+                
+                if u != frame_id and v != frame_id:
+                    continue
+
+                if u != frame_id and v != frame_id:
+                    continue
+
+                reference_frame = edge_data.get("reference_frame")
+                other_frame = v if reference_frame == u else u
+                
+                edge_transform = edge_data["transform"]
+                intrinsic_to_draw = None # Only set if frame_id is the CAMERA (3D) side
+
+                # Case 1: Edge holds InverseCameraProjection (Image -> Camera)
+                # Transform Source=Image, Target=Camera.
+                # add_transform(Image, Camera, InvProj) -> reference_frame=Camera, other=Image.
+                # So Camera is reference_frame.
+                if isinstance(edge_transform, InverseCameraProjection):
+                     if reference_frame == frame_id:
+                         intrinsic_to_draw = edge_transform.camera_projection
+
+                # Case 2: Edge holds CameraProjection (Camera -> Image)
+                # Transform Source=Camera, Target=Image.
+                # add_transform(Camera, Image, Proj) -> reference_frame=Image, other=Camera.
+                # So Camera is other_frame.
+                elif isinstance(edge_transform, CameraProjection):
+                     if other_frame == frame_id:
+                         intrinsic_to_draw = edge_transform
+                
+                if intrinsic_to_draw is not None:
+                    # Draw frustum using the Camera Frame's pose
+                    pose = frame_transforms[frame_id] # This is T_cam_to_root (Pose)
+                    
+                    # Ensure it is a Transform (has rotation/translation props)
+                    if hasattr(pose, 'rotation') and hasattr(pose, 'translation'):
+                        frustum_traces = _create_frustum_traces(
+                            intrinsic=intrinsic_to_draw,
+                            pose=pose,
+                            scale=frustum_scale,
+                            name=frame_id
+                        )
+                        traces.extend(frustum_traces)
+                        # Don't break, allowing multiple frustums if multiple cameras attached (though unlikely for one frame)
 
     # Create traces for connections
     if show_connections:
