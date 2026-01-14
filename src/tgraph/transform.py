@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Any, Union
 
 import networkx as nx
@@ -80,6 +81,39 @@ def as_euler_angles(q: quaternion.quaternion) -> tuple[float, float, float]:
     # which corresponds to (yaw, pitch, roll) in our ZYX convention
     yaw, pitch, roll = quaternion.as_euler_angles(q)
     return (roll, pitch, yaw)
+
+
+class ProjectionModel(Enum):
+    """
+    Enum for different camera projection models.
+    
+    Supported models:
+    - PINHOLE: Standard pinhole camera model (no distortion)
+    - PINHOLE_POLYNOMIAL: Pinhole with polynomial radial/tangential distortion (OpenCV-style)
+    - FISHEYE: Fisheye camera model
+    - OMNIDIRECTIONAL: Omnidirectional camera model
+    """
+    PINHOLE = "Pinhole"
+    PINHOLE_POLYNOMIAL = "Pinhole+Polynomial"
+    FISHEYE = "Fisheye"
+    OMNIDIRECTIONAL = "Omnidirectional"
+    
+    @classmethod
+    def from_string(cls, model_str: str) -> "ProjectionModel":
+        """Convert a string to a ProjectionModel enum value."""
+        # Try exact match first
+        for model in cls:
+            if model.value == model_str:
+                return model
+        # Try case-insensitive name match
+        model_str_upper = model_str.upper().replace("+", "_").replace("-", "_")
+        for model in cls:
+            if model.name == model_str_upper:
+                return model
+        raise ValueError(
+            f"Unknown projection model: {model_str}. "
+            f"Valid options: {[m.value for m in cls]}"
+        )
 
 
 def deserialize_transform(data: dict[str, Any]) -> "BaseTransform":
@@ -243,12 +277,18 @@ class Transform(BaseTransform):
     def __init__(
         self,
         translation: np.ndarray | list | tuple | None = None,
-        rotation: quaternion.quaternion | np.ndarray | list | tuple | None = None,
+        rotation: "quaternion.quaternion | np.ndarray | list | tuple | Transform | None" = None,
         dtype: np.dtype = np.float64,
     ):
         super().__init__(dtype=dtype)
 
         self.translation = ensure_translation(translation, self.dtype)
+        
+        # Handle rotation: can be quaternion, array, or Transform/Rotation object
+        if isinstance(rotation, BaseTransform):
+            # It's a Transform or Rotation object - extract the quaternion
+            rotation = rotation.rotation
+        
         self.rotation = ensure_rotation(rotation, self.dtype)
 
     @classmethod
@@ -286,6 +326,47 @@ class Transform(BaseTransform):
                 + self.translation.flatten()
             )
             return Transform(translation=new_translation, rotation=new_rotation, dtype=self.dtype)
+        
+        # Special handling for CameraProjection to preserve structure
+        # Import here to avoid circular dependency
+        if other.__class__.__name__ == 'CameraProjection':
+            # When composing T * CameraProjection:
+            #   T: parent→child transform (e.g., world→optical_frame)
+            #   Camera: has CV extrinsics [R|t] representing child→camera
+            #   Result: new camera with CV extrinsics parent→camera
+            #
+            # Approach: Compose in Transform convention, then convert back to CV convention
+            K = other.intrinsic_matrix
+            R_cam = other.rotation_matrix
+            t_cam_cv = other.t  # CV extrinsic t (not camera center!)
+            
+            # Get camera center in child frame (from CV extrinsics)
+            # In CV: t = -R @ C, so C = -R^T @ t
+            camera_center_in_child = -R_cam.T @ t_cam_cv
+            
+            # Transform camera center from child to parent
+            camera_center_in_parent = (
+                quaternion.rotate_vectors(self.rotation, camera_center_in_child)
+                + self.translation.flatten()
+            )
+            
+            # Compose rotations
+            composed_rotation = self.rotation * quaternion.from_rotation_matrix(R_cam)
+            composed_R = quaternion.as_rotation_matrix(composed_rotation)
+            
+            # Convert back to CV convention: t = -R @ C
+            composed_t_cv = -composed_R @ camera_center_in_parent
+            
+            # Return new CameraProjection with updated extrinsics
+            return other.__class__(
+                intrinsic_matrix=K,
+                rotation_matrix=composed_R,
+                translation=composed_t_cv,
+                dist_coeffs=other.dist_coeffs,
+                projection_model=other.projection_model,
+                image_size=other.image_size,
+                dtype=self.dtype
+            )
 
         # Fallback to matrix multiplication
         return MatrixTransform(self.as_matrix() @ other.as_matrix(), dtype=self.dtype)
@@ -459,6 +540,11 @@ class MatrixTransform(BaseTransform):
         """Deserialize transform from a dictionary."""
         dtype = np.dtype(data.get("dtype", "float64"))
         return cls(matrix=np.array(data["matrix"]), dtype=dtype)
+
+    def __repr__(self) -> str:
+        # Format matrix with numpy's array_repr for better readability
+        matrix_str = np.array_repr(self.matrix, precision=4, suppress_small=True)
+        return f"MatrixTransform(matrix={matrix_str})"
 
 
 # -----------------------------------------------------------------------------
@@ -690,16 +776,31 @@ class InverseProjection(BaseTransform):
 @register_transform
 class CameraProjection(Projection):
     """
-    A camera projection with explicit intrinsic and extrinsic parameters.
+    A camera projection with explicit intrinsic and extrinsic parameters in OpenCV convention.
 
     The full projection is P = K @ [R | t] where:
         - K: 3x3 intrinsic matrix (focal length, principal point)
-        - R: 3x3 rotation matrix (camera orientation)
-        - t: 3x1 translation vector (camera position)
+        - R: 3x3 rotation matrix (world → camera orientation)
+        - t: 3x1 translation vector (world origin in camera coordinates)
+
+    **Convention (OpenCV):**
+    - R: Rotation from world to camera (world_to_cam rotation matrix)
+    - t: Translation from world to camera (world origin position in camera coordinates)
+    - Projection: X_camera = R @ X_world + t, then X_image = K @ X_camera / Z_camera
+
+    **Camera Position in World:**
+    The camera's position in world coordinates is: C_world = -R^T @ t
+
+    Supports distortion coefficients and different projection models:
+        - PINHOLE: Standard pinhole (no distortion)
+        - PINHOLE_POLYNOMIAL: Pinhole with radial/tangential distortion (OpenCV k1,k2,p1,p2,k3,...)
+        - FISHEYE: Fisheye model
+        - OMNIDIRECTIONAL: Omnidirectional model
 
     Can be constructed from:
-        - Explicit K, R, t parameters
+        - Explicit K, R, t parameters in OpenCV convention (with optional distortion)
         - A 3x4 or 4x4 projection matrix (decomposed via RQ decomposition)
+        - Flexible aliases: K/intrinsic_matrix, R/rotation_matrix, t/translation, D/dist_coeffs
     """
 
     def __init__(
@@ -708,21 +809,71 @@ class CameraProjection(Projection):
         rotation_matrix: np.ndarray | list | None = None,
         translation: np.ndarray | list | None = None,
         matrix: np.ndarray | list | None = None,
+        dist_coeffs: list | np.ndarray | None = None,
+        projection_model: ProjectionModel | str | None = None,
+        image_size: tuple[int, int] | None = None,
         dtype: np.dtype = np.float64,
+        # Flexible aliases (OpenCV-style)
+        K: np.ndarray | list | None = None,
+        R: np.ndarray | list | None = None,
+        t: np.ndarray | list | None = None,
+        D: list | np.ndarray | None = None,
     ):
         """
-        Create a CameraProjection.
+        Create a CameraProjection from OpenCV convention parameters.
 
         Either provide (intrinsic_matrix, rotation_matrix, translation) OR matrix.
+        Supports flexible aliases: K=intrinsic_matrix, R=rotation_matrix, t=translation, D=dist_coeffs.
+
+        **Convention:** All parameters (R, t) follow OpenCV convention (world→camera).
 
         Args:
             intrinsic_matrix: 3x3 camera intrinsic matrix K.
-            rotation_matrix: 3x3 rotation matrix R.
-            translation: 3x1 translation vector t.
+            rotation_matrix: 3x3 rotation matrix R (world→camera), or Transform/Rotation object.
+                If Transform/Rotation is provided, it's assumed to be world→camera.
+            translation: 3x1 translation vector t (world origin in camera coordinates).
             matrix: 3x4 or 4x4 projection matrix (will be decomposed).
+            dist_coeffs: Distortion coefficients (OpenCV ordering: k1,k2,p1,p2,k3,...).
+            projection_model: Camera model (PINHOLE, PINHOLE_POLYNOMIAL, FISHEYE, etc.).
+            image_size: Image dimensions (width, height) in pixels.
             dtype: Data type for matrices.
+            K: Alias for intrinsic_matrix.
+            R: Alias for rotation_matrix.
+            t: Alias for translation.
+            D: Alias for dist_coeffs.
         """
         self._dtype = dtype
+        
+        # Handle aliases: K, R, t, D
+        if K is not None:
+            intrinsic_matrix = K
+        if R is not None:
+            rotation_matrix = R
+        if t is not None:
+            translation = t
+        if D is not None:
+            dist_coeffs = D
+        
+        # Store image size
+        self._image_size = image_size
+        
+        # Handle distortion coefficients
+        if dist_coeffs is None:
+            self._dist_coeffs = np.array([], dtype=dtype)
+        else:
+            self._dist_coeffs = np.asarray(dist_coeffs, dtype=dtype).flatten()
+        
+        # Handle projection model
+        if projection_model is None:
+            # Default: PINHOLE if no distortion, PINHOLE_POLYNOMIAL if distortion present
+            if len(self._dist_coeffs) > 0:
+                self._projection_model = ProjectionModel.PINHOLE_POLYNOMIAL
+            else:
+                self._projection_model = ProjectionModel.PINHOLE
+        elif isinstance(projection_model, str):
+            self._projection_model = ProjectionModel.from_string(projection_model)
+        else:
+            self._projection_model = projection_model
 
         if matrix is not None:
             # Decompose the provided matrix
@@ -737,13 +888,24 @@ class CameraProjection(Projection):
             )
         else:
             # Use explicit parameters
-            if intrinsic_matrix is None or rotation_matrix is None or translation is None:
+            if intrinsic_matrix is None:
                 raise ValueError(
-                    "Must provide either 'matrix' or all of "
-                    "(intrinsic_matrix, rotation_matrix, translation)"
+                    "Must provide either 'matrix' or 'intrinsic_matrix' (or alias 'K')"
                 )
+            
+            # Defaults for R and t
+            if rotation_matrix is None:
+                rotation_matrix = np.eye(3, dtype=dtype)
+            if translation is None:
+                translation = np.zeros(3, dtype=dtype)
 
             self._intrinsic_matrix = np.asarray(intrinsic_matrix, dtype=dtype)
+            
+            # Handle rotation_matrix: can be matrix, Transform, or Rotation
+            if isinstance(rotation_matrix, BaseTransform):
+                # It's a Transform or Rotation object - extract the rotation matrix
+                rotation_matrix = quaternion.as_rotation_matrix(rotation_matrix.rotation)
+            
             self._rotation_matrix = np.asarray(rotation_matrix, dtype=dtype)
             self._translation = np.asarray(translation, dtype=dtype).reshape(3, 1)
 
@@ -775,9 +937,13 @@ class CameraProjection(Projection):
         This is the recommended way to construct a CameraProjection when you have
         the camera's pose as a Transform object.
 
+        **Important:** The Transform represents the world→camera extrinsic motion.
+        The camera's position in world is: C_world = -R^T @ t.
+
         Args:
             intrinsic_matrix: 3x3 camera intrinsic matrix K.
             extrinsic_transform: Transform from world to camera frame.
+                The transform directly gives R and t in OpenCV convention.
             dtype: Data type for matrices.
 
         Returns:
@@ -785,12 +951,15 @@ class CameraProjection(Projection):
 
         Example:
             >>> K = np.array([[500, 0, 320], [0, 500, 240], [0, 0, 1]])
-            >>> world_to_camera = tf.Transform(translation=[0, 0, 5])
+            >>> # Camera 5 meters forward from world origin, looking back
+            >>> # (world origin is 5 meters behind the camera)
+            >>> world_to_camera = tf.Transform(translation=[0, 0, -5])
             >>> camera = tf.CameraProjection.from_intrinsics_and_transform(K, world_to_camera)
         """
-        # Extract R and t from the transform
+        # Extract R and t from the transform (already in world→camera convention)
         matrix_4x4 = extrinsic_transform.as_matrix()
         rotation_matrix = matrix_4x4[:3, :3]
+        # The Transform.translation is world→camera translation (OpenCV convention)
         translation = matrix_4x4[:3, 3:4]
 
         return cls(
@@ -811,9 +980,23 @@ class CameraProjection(Projection):
         return self._rotation_matrix
 
     @property
+    def rotation(self) -> quaternion.quaternion:
+        """The camera orientation as a quaternion (world → camera)."""
+        return quaternion.from_rotation_matrix(self._rotation_matrix)
+
+    @property
     def translation(self) -> np.ndarray:
-        """The 3x1 translation vector t (world → camera)."""
-        return self._translation
+        """
+        The camera center position (for visualization consistency).
+        
+        Returns the camera's position in world coordinates, matching the convention
+        used by Transform.translation for frame positioning in visualization.
+        
+        This is computed from CV extrinsics as: C = -R^T @ t
+        """
+        # Camera center from CV extrinsics: C = -R^T @ t
+        camera_center = -self._rotation_matrix.T @ self._translation.flatten()
+        return camera_center.reshape(3, 1)
 
     @property
     def extrinsic_transform(self) -> "Transform":
@@ -842,6 +1025,47 @@ class CameraProjection(Projection):
     def principal_point(self) -> tuple[float, float]:
         """Principal point (cx, cy) from the intrinsic matrix."""
         return (float(self._intrinsic_matrix[0, 2]), float(self._intrinsic_matrix[1, 2]))
+    
+    @property
+    def dist_coeffs(self) -> np.ndarray:
+        """Distortion coefficients (OpenCV ordering: k1, k2, p1, p2, k3, ...)."""
+        return self._dist_coeffs
+    
+    @property
+    def distortion_coefficients(self) -> np.ndarray:
+        """Alias for dist_coeffs."""
+        return self._dist_coeffs
+    
+    @property
+    def projection_model(self) -> ProjectionModel:
+        """The camera projection model (PINHOLE, PINHOLE_POLYNOMIAL, FISHEYE, etc.)."""
+        return self._projection_model
+    
+    @property
+    def image_size(self) -> tuple[int, int] | None:
+        """Image dimensions (width, height) in pixels, if specified."""
+        return self._image_size
+    
+    # OpenCV-style shortcuts
+    @property
+    def K(self) -> np.ndarray:
+        """Alias for intrinsic_matrix (OpenCV-style)."""
+        return self._intrinsic_matrix
+    
+    @property
+    def D(self) -> np.ndarray:
+        """Alias for dist_coeffs (OpenCV-style)."""
+        return self._dist_coeffs
+    
+    @property
+    def R(self) -> np.ndarray:
+        """Alias for rotation_matrix (OpenCV-style)."""
+        return self._rotation_matrix
+    
+    @property
+    def t(self) -> np.ndarray:
+        """Alias for translation (OpenCV-style). Returns flattened 3-element array."""
+        return self._translation.flatten()
 
     def _decompose_projection_matrix(
         self, projection_matrix: np.ndarray
@@ -905,29 +1129,49 @@ class CameraProjection(Projection):
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize camera projection to a JSON-compatible dictionary."""
-        return {
+        result = {
             "type": "CameraProjection",
             "intrinsic_matrix": self._intrinsic_matrix.tolist(),
             "rotation_matrix": self._rotation_matrix.tolist(),
             "translation": self._translation.flatten().tolist(),
+            "dist_coeffs": self._dist_coeffs.tolist(),
+            "projection_model": self._projection_model.value,
             "dtype": np.dtype(self.dtype).name,
         }
+        if self._image_size is not None:
+            result["image_size"] = list(self._image_size)
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CameraProjection":
         """Deserialize camera projection from a dictionary."""
         dtype = np.dtype(data.get("dtype", "float64"))
+        dist_coeffs = data.get("dist_coeffs", [])
+        projection_model_str = data.get("projection_model", "Pinhole")
+        image_size = data.get("image_size", None)
+        if image_size is not None:
+            image_size = tuple(image_size)
+        
         return cls(
             intrinsic_matrix=np.array(data["intrinsic_matrix"]),
             rotation_matrix=np.array(data["rotation_matrix"]),
             translation=np.array(data["translation"]),
+            dist_coeffs=dist_coeffs,
+            projection_model=projection_model_str,
+            image_size=image_size,
             dtype=dtype,
         )
 
     def __repr__(self) -> str:
         fx, fy = self.focal_length
         cx, cy = self.principal_point
-        return f"CameraProjection(fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f})"
+        t = self._translation.flatten()
+        q = self.rotation
+        return (
+            f"CameraProjection(fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f}, "
+            f"t=[{t[0]:.2f}, {t[1]:.2f}, {t[2]:.2f}], "
+            f"R=[{q.w:.3f}, {q.x:.3f}, {q.y:.3f}, {q.z:.3f}])"
+        )
 
 
 class Pose:
@@ -1178,40 +1422,50 @@ class TransformGraph:
 
     def add_transform(
         self,
-        parent_frame: str,
-        child_frame: str,
+        source_frame: str,
+        target_frame: str,
         transform: BaseTransform,
     ) -> None:
         """
         Add a transform between two frames.
 
+        API: add_transform(source, target, transform)
+        - SOURCE: The "Child" frame being placed.
+        - TARGET: The "Parent" frame (reference frame).
+        - TRANSFORM: Source→Target operator (converts source coords to target coords).
+
+        The transform represents the Source frame's pose relative to the Target frame.
+        To convert a point from Source to Target: P_target = transform * P_source
+
         Args:
-            parent_frame: The source/parent frame ID.
-            child_frame: The target/child frame ID.
-            transform: The transform from parent to child (T_parent_to_child).
+            source_frame: The child frame ID (frame being placed).
+            target_frame: The parent frame ID (reference frame).
+            transform: The transform from source to target (T_source_to_target).
 
         Raises:
             ValueError: If an edge already exists between these frames.
         """
-        if self._graph.has_edge(parent_frame, child_frame):
+        if self._graph.has_edge(source_frame, target_frame):
             raise ValueError(
-                f"Transform between '{parent_frame}' and '{child_frame}' already exists. "
+                f"Transform between '{source_frame}' and '{target_frame}' already exists. "
                 "Use update_transform() to modify it."
             )
 
+        # Store edge from target→source (parent→child direction)
+        # But the transform stored is source→target
         self._graph.add_edge(
-            parent_frame,
-            child_frame,
+            target_frame,
+            source_frame,
             transform=transform,
-            parent=parent_frame,
+            parent=target_frame,  # Target is the parent
             is_cache=False,
             weight=self.ADDED_EDGE_WEIGHT,
         )
 
     def update_transform(
         self,
-        parent_frame: str,
-        child_frame: str,
+        source_frame: str,
+        target_frame: str,
         transform: BaseTransform,
     ) -> None:
         """
@@ -1220,25 +1474,25 @@ class TransformGraph:
         Automatically invalidates any cached shortcuts that depend on this edge.
 
         Args:
-            parent_frame: The source/parent frame ID.
-            child_frame: The target/child frame ID.
-            transform: The new transform from parent to child.
+            source_frame: The child frame ID (frame being placed).
+            target_frame: The parent frame ID (reference frame).
+            transform: The new transform from source to target.
 
         Raises:
             ValueError: If no edge exists between these frames.
         """
-        if not self._graph.has_edge(parent_frame, child_frame):
+        if not self._graph.has_edge(target_frame, source_frame):
             raise ValueError(
-                f"No transform between '{parent_frame}' and '{child_frame}'. "
+                f"No transform between '{source_frame}' and '{target_frame}'. "
                 "Use add_transform() to create it."
             )
 
         # Invalidate dependent caches
-        self._invalidate_caches_for_edge(parent_frame, child_frame)
+        self._invalidate_caches_for_edge(target_frame, source_frame)
 
         # Update the transform
-        self._graph[parent_frame][child_frame]["transform"] = transform
-        self._graph[parent_frame][child_frame]["parent"] = parent_frame
+        self._graph[target_frame][source_frame]["transform"] = transform
+        self._graph[target_frame][source_frame]["parent"] = target_frame
 
     def remove_transform(self, frame_a: str, frame_b: str) -> None:
         """
@@ -1296,10 +1550,14 @@ class TransformGraph:
             transform = edge_data["transform"]
             parent = edge_data["parent"]
 
-            # If we're going against the natural direction, invert
-            if parent == target_frame:
+            # Edge direction: parent→child (target→source)
+            # Transform: child→parent (source→target)
+            # If traversing parent→child: use inverse
+            # If traversing child→parent: use direct
+            if parent == source_frame:
+                # source is parent, going down to child (target), use inverse
                 return transform.inverse()
-            return transform
+            return transform  # source is child, going up to parent (target), use direct
 
         # Find shortest path
         try:
@@ -1325,10 +1583,15 @@ class TransformGraph:
                 edge_key = tuple(sorted([current_frame, next_frame]))
                 added_edges.append(edge_key)
 
-            # If we're going against the natural direction, invert
-            if parent == next_frame:
+            # Edge direction: parent→child
+            # Transform: child→parent
+            # If current is parent: use inverse
+            # If current is child: use direct
+            if parent == current_frame:
+                # Going down the tree (parent→child), use inverse
                 step_transform = transform.inverse()
             else:
+                # Going up the tree (child→parent), use direct
                 step_transform = transform
 
             composed_transform = composed_transform * step_transform
@@ -1345,12 +1608,16 @@ class TransformGraph:
         transform: BaseTransform,
         added_edges: list[tuple[str, str]],
     ) -> None:
-        """Add a cached shortcut edge and register dependencies."""
+        """
+        Add a cached shortcut edge and register dependencies.
+        
+        The transform is source→target, edge goes from target→source.
+        """
         self._graph.add_edge(
-            source_frame,
-            target_frame,
-            transform=transform,
-            parent=source_frame,
+            target_frame,  # Edge from parent (target)
+            source_frame,  # to child (source)
+            transform=transform,  # source→target transform
+            parent=target_frame,  # target is the parent
             is_cache=True,
             weight=self.CACHED_EDGE_WEIGHT,
         )
@@ -1437,11 +1704,15 @@ class TransformGraph:
             if data.get("is_cache", False):
                 continue  # Skip cache edges
 
+            parent = data["parent"]
+            # Edge goes parent→child, find child
+            child = v if parent == u else u
+            
             edges.append(
                 {
-                    "parent": data["parent"],
-                    "child": v if data["parent"] == u else u,
-                    "transform": data["transform"].to_dict(),
+                    "source": child,  # source (child) frame
+                    "target": parent,  # target (parent) frame
+                    "transform": data["transform"].to_dict(),  # source→target transform
                 }
             )
 
@@ -1464,10 +1735,10 @@ class TransformGraph:
         graph = cls()
 
         for edge_data in data.get("edges", []):
-            parent = edge_data["parent"]
-            child = edge_data["child"]
+            source = edge_data["source"]
+            target = edge_data["target"]
             transform = deserialize_transform(edge_data["transform"])
-            graph.add_transform(parent, child, transform)
+            graph.add_transform(source, target, transform)
 
         return graph
 

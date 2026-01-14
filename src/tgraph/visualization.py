@@ -10,7 +10,7 @@ try:
 except ImportError:
     go = None
 
-from tgraph.transform import Transform, TransformGraph
+from tgraph.transform import CameraProjection, Identity, InverseProjection, Projection, Transform, TransformGraph
 
 
 def _check_plotly():
@@ -54,10 +54,26 @@ def _create_axis_traces(
     """
     Create RGB axes for a specific transform.
     """
-    # Use matrix form to be robust against different Transform types (e.g. MatrixTransform)
+    # Get origin - use .translation property for consistency where available
+    # (For CameraProjection, .translation returns camera center, not K@t)
+    # For MatrixTransform and others without .translation, extract from matrix
+    if hasattr(transform, 'translation'):
+        origin = transform.translation.flatten()
+    else:
+        transform_matrix = transform.as_matrix()
+        origin = transform_matrix[:3, 3]
+    
+    # Get rotation matrix
     transform_matrix = transform.as_matrix()
-    origin = transform_matrix[:3, 3]
-    rotation_matrix = transform_matrix[:3, :3]
+    if transform_matrix.shape == (4, 4):
+        rotation_matrix = transform_matrix[:3, :3]
+    else:
+        # For projections (3x4 or 4x4 projection matrices), extract rotation differently
+        # For CameraProjection, use the rotation_matrix property if available
+        if hasattr(transform, 'rotation_matrix'):
+            rotation_matrix = transform.rotation_matrix
+        else:
+            rotation_matrix = np.eye(3)
 
     # Axis end points in local frame
     x_end_local = np.array([scale, 0, 0])
@@ -141,11 +157,102 @@ def _create_axis_traces(
     return traces
 
 
+def _create_frustum_traces(
+    camera: CameraProjection, scale: float = 1.0, name: str = "", visible: bool = True
+) -> list[go.Scatter3d]:
+    """
+    Create a frustum pyramid for a CameraProjection.
+    
+    The frustum shows the camera's field of view as a pyramid from the camera center
+    to an image plane at depth 'scale'.
+    
+    Args:
+        camera: CameraProjection with extrinsics defining camera pose
+        scale: Depth of the frustum (distance from camera center to image plane)
+        name: Label for the frustum
+        visible: Whether the frustum is initially visible
+    """
+    # 1. Get camera position and orientation
+    # camera.translation gives us the camera center in world coordinates
+    camera_center = camera.translation.flatten()
+    
+    # Camera orientation (camera → world rotation)
+    R_world_to_cam = camera.rotation_matrix
+    R_cam_to_world = R_world_to_cam.T  # Inverse of rotation
+
+    # 2. Define image corners in pixel coordinates
+    if camera.image_size is not None:
+        w, h = camera.image_size
+    else:
+        # Infer from principal point (assume it's roughly at image center)
+        cx, cy = camera.principal_point
+        w = int(2 * cx) if cx > 0 else 640
+        h = int(2 * cy) if cy > 0 else 480
+
+    corners_2d = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float64)
+
+    # 3. Unproject corners to normalized camera frame directions
+    K = camera.intrinsic_matrix
+    K_inv = np.linalg.inv(K)
+
+    corners_cam_frame = []
+    for u, v in corners_2d:
+        # Get ray direction in camera frame
+        ray_dir = K_inv @ np.array([u, v, 1])
+        # Normalize and scale to desired depth
+        ray_dir = ray_dir / np.linalg.norm(ray_dir) * scale
+        corners_cam_frame.append(ray_dir)
+
+    # 4. Transform corners from camera frame to world frame
+    corners_world = [camera_center + R_cam_to_world @ p for p in corners_cam_frame]
+
+    traces = []
+
+    # Draw pyramid edges from camera center to each corner of the image plane
+    for p in corners_world:
+        traces.append(
+            go.Scatter3d(
+                x=[camera_center[0], p[0]],
+                y=[camera_center[1], p[1]],
+                z=[camera_center[2], p[2]],
+                mode="lines",
+                line=dict(color="orange", width=2),
+                showlegend=False,
+                visible=visible,
+                hoverinfo="none",
+            )
+        )
+
+    # Draw the image plane rectangle at the frustum's far end
+    cx = [p[0] for p in corners_world] + [corners_world[0][0]]
+    cy = [p[1] for p in corners_world] + [corners_world[0][1]]
+    cz = [p[2] for p in corners_world] + [corners_world[0][2]]
+
+    traces.append(
+        go.Scatter3d(
+            x=cx,
+            y=cy,
+            z=cz,
+            mode="lines",
+            line=dict(color="orange", width=3),
+            name=f"{name}_frustum",
+            showlegend=False,
+            visible=visible,
+            hoverinfo="text",
+            text=f"{name} Frustum",
+        )
+    )
+
+    return traces
+
+
 def visualize_transform_graph(
     transform_graph: TransformGraph,
     root_frame: str | None = None,
     axis_scale: float = 1.0,
     show_connections: bool = True,
+    show_frustums: bool = True,
+    frustum_scale: float = 1.0,
     title: str = "Transform Graph Visualization (3D)",
 ) -> "go.Figure":
     """
@@ -157,6 +264,8 @@ def visualize_transform_graph(
                     If None, determined heuristically.
         axis_scale: Length of the RGB axes for each frame.
         show_connections: Whether to draw lines between connected frames.
+        show_frustums: Whether to show camera frustums for CameraProjection frames.
+        frustum_scale: Depth of the frustum visualization.
         title: Plot title.
 
     Returns:
@@ -179,11 +288,39 @@ def visualize_transform_graph(
     frame_transforms = {}
 
     # Calculate global transforms for all frames reachable from root
+    # Special handling: If a frame is connected via a Projection edge (which is non-invertible),
+    # use the parent frame's position instead
+    projection_child_to_parent = {}  # Maps child -> parent for Projection edges
+    
+    for u, v, edge_data in transform_graph.graph.edges(data=True):
+        if isinstance(edge_data["transform"], (Projection, InverseProjection)):
+            # The edge stores (u, v) with a parent attribute
+            # parent attribute tells us which side is the TARGET frame
+            parent_frame = edge_data.get("parent")  # TARGET frame
+            # The other node is the SOURCE frame
+            source_frame = v if parent_frame == u else u
+            # For visualization: the projection's target (2D) uses the source's position
+            projection_child_to_parent[parent_frame] = source_frame
+    
     # We rely on the graph's internal pathfinding and caching
     for frame_id in transform_graph.frames:
         try:
-            # get_transform handles finding the path and composing transforms
-            transform = transform_graph.get_transform(root_frame, frame_id)
+            # get_transform(frame_id, root_frame) gives us frame→root
+            # i.e., the transform that places the frame relative to root
+            # Its .translation property gives frame's origin in root coords
+            if frame_id == root_frame:
+                # Root frame is at origin with identity rotation
+                transform = Identity()
+            else:
+                # If this frame is a Projection target, use source's position instead
+                # (Projections map 3D -> 2D, so the 2D frame has same origin as 3D source)
+                if frame_id in projection_child_to_parent:
+                    # Use parent (source) frame's position
+                    parent_frame = projection_child_to_parent[frame_id]
+                    transform = transform_graph.get_transform(parent_frame, root_frame)
+                else:
+                    transform = transform_graph.get_transform(frame_id, root_frame)
+            
             frame_transforms[frame_id] = transform
         except ValueError:
             # Frame is part of a disconnected component not reachable from root
@@ -191,7 +328,12 @@ def visualize_transform_graph(
 
     # Create traces for frames
     for frame_id, transform in frame_transforms.items():
+        # Always draw axes
         traces.extend(_create_axis_traces(transform, scale=axis_scale, name=frame_id))
+
+        # If it's a camera projection, optionally draw frustum
+        if show_frustums and isinstance(transform, CameraProjection):
+            traces.extend(_create_frustum_traces(transform, scale=frustum_scale, name=frame_id))
 
     # Create traces for connections
     if show_connections:
@@ -201,8 +343,19 @@ def visualize_transform_graph(
 
         for u, v in transform_graph.edges:
             if u in frame_transforms and v in frame_transforms:
-                p1 = frame_transforms[u].translation.flatten()
-                p2 = frame_transforms[v].translation.flatten()
+                # Get translation, handling objects without .translation property
+                u_transform = frame_transforms[u]
+                v_transform = frame_transforms[v]
+                
+                if hasattr(u_transform, 'translation'):
+                    p1 = u_transform.translation.flatten()
+                else:
+                    p1 = u_transform.as_matrix()[:3, 3]
+                
+                if hasattr(v_transform, 'translation'):
+                    p2 = v_transform.translation.flatten()
+                else:
+                    p2 = v_transform.as_matrix()[:3, 3]
 
                 edge_x.extend([p1[0], p2[0], None])
                 edge_y.extend([p1[1], p2[1], None])
