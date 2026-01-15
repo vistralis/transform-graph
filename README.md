@@ -138,7 +138,16 @@ For a comprehensive guide on how to use `tgraph`, check out the [Tutorial](docs/
 *   Managing complex frame graphs
 *   3D spatial and 2D topology visualization
 *   Camera models and projections
+*   Camera models and projections
 *   Serialization
+
+### API Documentation
+
+To generate the full API documentation, run the provided tool. This will read the current package version and generate a versioned Markdown file (e.g., `api_doc_v0.1.0.md`).
+
+```bash
+python tools/generate_api_docs.py
+```
 
 ## Development & Quality Control
 
