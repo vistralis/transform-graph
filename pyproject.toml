@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transform-graph"
+version = "0.1.0"
+description = "Spatial transformations for robotics and computer vision."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "Vistralis Labs", email = "support@vistralis.org"}
+]
+keywords = [
+    "robotics",
+    "transforms",
+    "spatial",
+    "coordinate-frames",
+    "computer-vision",
+    "SE3",
+    "camera-projection",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy>=2.0.0",
+    "numpy-quaternion",
+    "networkx",
+    "scipy",
+]
+
+[project.urls]
+Homepage = "https://vistralis.org"
+Documentation = "https://vistralis.org/transform-graph"
+Source = "https://github.com/vistralis/transform-graph"
+Issues = "https://github.com/vistralis/transform-graph/issues"
+
+[project.optional-dependencies]
+viz = [
+    "plotly>=5.0.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov",
+    "ruff",
+]
+all = [
+    "transform-graph[viz,dev]",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E: pycodestyle errors
+# F: Pyflakes
+# I: isort
+# N: pep8-naming
+# W: pycodestyle warnings
+# UP: pyupgrade
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["N806", "N803", "N802", "UP015"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

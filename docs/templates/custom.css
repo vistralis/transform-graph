@@ -1,0 +1,328 @@
+/* Vistralis Dark Theme for pdoc
+ *
+ * Maps pdoc's CSS custom properties to the vistralis.org design system.
+ * Colors from website/styles.css: bg-primary, text-primary, accent-blue, etc.
+ */
+
+/* -- Import the same fonts as vistralis.org -- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* -- Override pdoc's theme variables -- */
+:root {
+    --pdoc-background: #0a0a0f;
+}
+
+.pdoc {
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --link: #3b82f6;
+    --link-hover: #60a5fa;
+    --code: #13141c;
+    --active: rgba(59, 130, 246, 0.15);
+    --accent: rgba(25, 27, 36, 0.6);
+    --accent2: rgba(255, 255, 255, 0.08);
+    --nav-hover: rgba(59, 130, 246, 0.1);
+    --name: #60a5fa;
+    --def: #2dd4bf;
+    --annotation: #a78bfa;
+}
+
+/* -- Typography -- */
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+code, kbd, pre, samp, .pdoc-code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+}
+
+.pdoc h1, .pdoc h2, .pdoc h3, .pdoc h4 {
+    font-weight: 600;
+    color: #f8fafc;
+}
+
+/* -- Sidebar / Nav -- */
+nav.pdoc {
+    background-color: #0f1016 !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+    box-shadow: none !important;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+nav.pdoc .module-list-button {
+    color: #f8fafc;
+    border-color: #64748b;
+}
+
+nav.pdoc .module-list-button:hover {
+    border-color: #f8fafc;
+}
+
+nav.pdoc a, nav.pdoc a:hover {
+    color: #f8fafc !important;
+}
+
+nav.pdoc li:hover {
+    background-color: rgba(59, 130, 246, 0.08) !important;
+}
+
+nav.pdoc footer {
+    color: #64748b;
+}
+
+nav.pdoc footer:before {
+    border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+/* -- Search -- */
+nav.pdoc input[type=search] {
+    background: rgba(25, 27, 36, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #f8fafc;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+}
+
+nav.pdoc input[type=search]::placeholder {
+    color: #64748b;
+}
+
+nav.pdoc input[type=search]:focus {
+    border-color: #3b82f6;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* -- Module info / main content -- */
+.pdoc .modulename {
+    color: #f8fafc;
+}
+
+.pdoc .modulename a {
+    color: #3b82f6 !important;
+}
+
+/* -- Code blocks -- */
+.pdoc pre {
+    background-color: #13141c !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 8px;
+    padding: 1rem !important;
+}
+
+.pdoc code {
+    color: #e2e8f0;
+    background-color: rgba(25, 27, 36, 0.8);
+    border-radius: 4px;
+}
+
+.pdoc a > code {
+    color: #60a5fa;
+}
+
+/* -- Attribute blocks -- */
+.pdoc .attr {
+    background-color: rgba(25, 27, 36, 0.6) !important;
+    border-left: 3px solid #3b82f6;
+    border-radius: 4px;
+}
+
+.pdoc .attr:hover {
+    filter: brightness(1.1) !important;
+}
+
+/* -- Tables -- */
+.pdoc table th,
+.pdoc table td {
+    border-color: rgba(255, 255, 255, 0.08) !important;
+    padding: 8px 14px;
+}
+
+.pdoc table th {
+    background-color: rgba(25, 27, 36, 0.8);
+    color: #f8fafc;
+}
+
+.pdoc table td {
+    background-color: rgba(15, 16, 22, 0.6);
+}
+
+.pdoc table tr:hover td {
+    background-color: rgba(25, 27, 36, 0.4);
+}
+
+/* -- Syntax highlighting (dark palette) -- */
+.pdoc-code { background: #13141c !important; }
+.pdoc-code .c, .pdoc-code .ch, .pdoc-code .cm,
+.pdoc-code .cpf, .pdoc-code .c1, .pdoc-code .cs { color: #64748b !important; }
+.pdoc-code .k, .pdoc-code .kc, .pdoc-code .kd,
+.pdoc-code .kn, .pdoc-code .kr, .pdoc-code .kp { color: #c084fc !important; }
+.pdoc-code .o { color: #94a3b8 !important; }
+.pdoc-code .s, .pdoc-code .s1, .pdoc-code .s2, .pdoc-code .sa,
+.pdoc-code .sb, .pdoc-code .sc, .pdoc-code .sh, .pdoc-code .dl,
+.pdoc-code .sd, .pdoc-code .sx { color: #34d399 !important; }
+.pdoc-code .n { color: #f8fafc !important; }
+.pdoc-code .nf, .pdoc-code .fm { color: #60a5fa !important; }
+.pdoc-code .nc { color: #22d3ee !important; }
+.pdoc-code .nn { color: #a78bfa !important; }
+.pdoc-code .nb, .pdoc-code .bp { color: #2dd4bf !important; }
+.pdoc-code .nd { color: #f472b6 !important; }
+.pdoc-code .ne { color: #f87171 !important; }
+.pdoc-code .m, .pdoc-code .mi, .pdoc-code .mf,
+.pdoc-code .mh, .pdoc-code .mo, .pdoc-code .mb,
+.pdoc-code .il { color: #fb923c !important; }
+.pdoc-code .nv, .pdoc-code .vi, .pdoc-code .vm,
+.pdoc-code .vc, .pdoc-code .vg { color: #e2e8f0 !important; }
+.pdoc-code .p { color: #94a3b8 !important; }
+.pdoc-code .w { color: #475569 !important; }
+.pdoc-code .cp { color: #fbbf24 !important; }
+.pdoc-code .kt { color: #38bdf8 !important; }
+.pdoc-code .na { color: #a5f3fc !important; }
+.pdoc-code .nl { color: #94a3b8 !important; }
+.pdoc-code .no { color: #f87171 !important; }
+.pdoc-code .nt { color: #f472b6 !important; }
+.pdoc-code .ow { color: #c084fc !important; }
+.pdoc-code .err { border: none !important; color: #f87171 !important; }
+.pdoc-code .linenos { color: #475569 !important; }
+.pdoc-code .gd { color: #f87171 !important; }
+.pdoc-code .gi { color: #34d399 !important; }
+.pdoc-code .ge { font-style: italic; color: #e2e8f0 !important; }
+.pdoc-code .gs { font-weight: bold; }
+.pdoc-code .go { color: #64748b !important; }
+.pdoc-code .gp { color: #94a3b8 !important; }
+.pdoc-code .gu { color: #a78bfa !important; }
+.pdoc-code .gt { color: #60a5fa !important; }
+.pdoc-code .si { color: #f472b6 !important; }
+.pdoc-code .se { color: #fb923c !important; }
+.pdoc-code .sr { color: #f472b6 !important; }
+.pdoc-code .ss { color: #38bdf8 !important; }
+
+/* -- Alerts (keep functional but dark-adapted) -- */
+.pdoc .alert.note {
+    background-color: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #93c5fd;
+}
+
+.pdoc .alert.tip {
+    background-color: rgba(45, 212, 191, 0.1);
+    border-color: rgba(45, 212, 191, 0.3);
+    color: #5eead4;
+}
+
+.pdoc .alert.warning {
+    background-color: rgba(251, 191, 36, 0.1);
+    border-color: rgba(251, 191, 36, 0.3);
+    color: #fcd34d;
+}
+
+.pdoc .alert.caution, .pdoc .alert.danger {
+    background-color: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #fca5a5;
+}
+
+/* -- View source button -- */
+.view-source-button {
+    color: #64748b !important;
+}
+
+.view-source-button:hover {
+    color: #3b82f6 !important;
+}
+
+/* -- Git button -- */
+.pdoc .git-button {
+    border-color: #3b82f6;
+    color: #3b82f6;
+}
+
+.pdoc .git-button:hover {
+    background-color: #3b82f6;
+    color: #0a0a0f;
+}
+
+/* -- Scrollbar -- */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* -- MathJax dark mode -- */
+mjx-container {
+    color: #f8fafc !important;
+}
+
+/* -- Value toggle button -- */
+.pdoc .view-value-button {
+    border-color: #64748b;
+    color: #94a3b8;
+}
+
+.pdoc .view-value-button:hover {
+    background: rgba(25, 27, 36, 0.8) !important;
+}
+
+/* -- Deprecated decorator -- */
+.pdoc .decorator-deprecated {
+    color: #f87171;
+}
+
+/* -- Headerlink -- */
+.pdoc .headerlink::before {
+    color: #3b82f6;
+}
+
+/* -- Selection -- */
+::selection {
+    background-color: rgba(59, 130, 246, 0.3);
+    color: #f8fafc;
+}
+
+/* -- Docstring headings -- */
+.pdoc .docstring h1,
+.pdoc .docstring h2,
+.pdoc .docstring h3 {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding-bottom: 0.3em;
+}
+
+/* -- HR -- */
+.pdoc hr {
+    border: none;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+    margin: 2rem 0;
+}
+
+/* -- Blockquote -- */
+.pdoc blockquote {
+    border-left: 3px solid #3b82f6;
+    padding-left: 1rem;
+    color: #94a3b8;
+}
+
+/* -- Attribution / pdoc logo -- */
+.pdoc .attribution img {
+    filter: brightness(0) invert(1) opacity(0.5);
+}
+
+.pdoc .attribution:hover img {
+    filter: none;
+}
