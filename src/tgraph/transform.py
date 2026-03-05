@@ -183,10 +183,7 @@ class ProjectionModel(Enum):
         for model in cls:
             if model.name.lower() == lower:
                 return model
-        raise ValueError(
-            f"Unknown projection model: {model_str}. "
-            f"Valid: {[m.value for m in cls]}"
-        )
+        raise ValueError(f"Unknown projection model: {model_str}. Valid: {[m.value for m in cls]}")
 
 
 def deserialize_transform(data: dict[str, Any]) -> BaseTransform:
@@ -1391,7 +1388,7 @@ class CameraProjection(Projection):
         mirror/sphere, applies radial distortion, then scales by focal
         length and principal point.
         """
-        norm = np.sqrt(pts[:, 0]**2 + pts[:, 1]**2 + pts[:, 2]**2)
+        norm = np.sqrt(pts[:, 0] ** 2 + pts[:, 1] ** 2 + pts[:, 2] ** 2)
         safe_norm = np.where(norm < _NORM_EPS, _NORM_EPS, norm)
         x = pts[:, 0] / safe_norm
         y = pts[:, 1] / safe_norm
@@ -2265,9 +2262,7 @@ def transform_points(
                 # Linear projection (OrthographicProjection etc.) — use matrix path
                 N = points.shape[0]
                 if points.shape[1] == 3:
-                    hom_points = np.hstack(
-                        [points, np.ones((N, 1), dtype=transform.dtype)]
-                    )
+                    hom_points = np.hstack([points, np.ones((N, 1), dtype=transform.dtype)])
                 elif points.shape[1] == 4:
                     hom_points = points
                 else:

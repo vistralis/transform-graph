@@ -23,19 +23,23 @@ from tgraph.transform import ProjectionModel
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def K_standard():
     """Standard 640×480 camera intrinsic matrix."""
-    return np.array([
-        [500.0, 0.0, 320.0],
-        [0.0, 500.0, 240.0],
-        [0.0, 0.0, 1.0],
-    ])
+    return np.array(
+        [
+            [500.0, 0.0, 320.0],
+            [0.0, 500.0, 240.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
 # Pinhole
 # ---------------------------------------------------------------------------
+
 
 class TestPinholeProjection:
     """Pinhole: ideal perspective, no distortion."""
@@ -58,11 +62,13 @@ class TestPinholeProjection:
     def test_batch_projection(self, K_standard):
         """Multiple points project correctly."""
         cam = tf.CameraProjection(K=K_standard, projection_model=ProjectionModel.Pinhole)
-        pts = np.array([
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 1.0, 1.0],
-        ])
+        pts = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ]
+        )
         uv = cam._apply(pts)
         assert uv.shape == (3, 2)
         np.testing.assert_allclose(uv[0], [320.0, 240.0], atol=1e-10)
@@ -74,16 +80,19 @@ class TestPinholeProjection:
 # BrownConrady
 # ---------------------------------------------------------------------------
 
+
 class TestBrownConradyProjection:
     """BrownConrady: pinhole + radial/tangential distortion."""
 
     def test_zero_distortion_matches_pinhole(self, K_standard):
         """With D=zeros, BrownConrady == Pinhole."""
         cam_pin = tf.CameraProjection(
-            K=K_standard, projection_model=ProjectionModel.Pinhole,
+            K=K_standard,
+            projection_model=ProjectionModel.Pinhole,
         )
         cam_bc = tf.CameraProjection(
-            K=K_standard, D=[0, 0, 0, 0, 0],
+            K=K_standard,
+            D=[0, 0, 0, 0, 0],
             projection_model=ProjectionModel.BrownConrady,
         )
         pts = np.array([[1.0, 0.5, 5.0], [0.0, 0.0, 10.0]])
@@ -92,10 +101,14 @@ class TestBrownConradyProjection:
     def test_positive_radial_distortion_barrel(self, K_standard):
         """Positive k1 causes barrel distortion: pixels move outward."""
         cam_no_dist = tf.CameraProjection(
-            K=K_standard, D=[0, 0, 0, 0], projection_model=ProjectionModel.BrownConrady,
+            K=K_standard,
+            D=[0, 0, 0, 0],
+            projection_model=ProjectionModel.BrownConrady,
         )
         cam_barrel = tf.CameraProjection(
-            K=K_standard, D=[0.1, 0, 0, 0], projection_model=ProjectionModel.BrownConrady,
+            K=K_standard,
+            D=[0.1, 0, 0, 0],
+            projection_model=ProjectionModel.BrownConrady,
         )
         pts = np.array([[1.0, 1.0, 5.0]])
         uv_clean = cam_no_dist._apply(pts)
@@ -108,7 +121,8 @@ class TestBrownConradyProjection:
     def test_on_axis_unaffected_by_distortion(self, K_standard):
         """On-axis point is not affected by any distortion (r=0)."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.5, -0.3, 0.01, 0.02, 0.1],
+            K=K_standard,
+            D=[0.5, -0.3, 0.01, 0.02, 0.1],
             projection_model=ProjectionModel.BrownConrady,
         )
         pts = np.array([[0.0, 0.0, 10.0]])
@@ -118,7 +132,8 @@ class TestBrownConradyProjection:
     def test_five_coefficient_distortion(self, K_standard):
         """All 5 coefficients (k1, k2, p1, p2, k3) are applied."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.001, 0.002, 0.01],
+            K=K_standard,
+            D=[0.1, -0.05, 0.001, 0.002, 0.01],
             projection_model=ProjectionModel.BrownConrady,
         )
         pts = np.array([[2.0, 1.0, 10.0]])
@@ -133,13 +148,15 @@ class TestBrownConradyProjection:
 # KannalaBrandt
 # ---------------------------------------------------------------------------
 
+
 class TestKannalaBrandtProjection:
     """KannalaBrandt: fisheye / equidistant model."""
 
     def test_on_axis_projects_to_principal_point(self, K_standard):
         """On-axis point → (cx, cy) regardless of distortion."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.01, -0.005],
+            K=K_standard,
+            D=[0.1, -0.05, 0.01, -0.005],
             projection_model=ProjectionModel.KannalaBrandt,
         )
         pts = np.array([[0.0, 0.0, 10.0]])
@@ -149,7 +166,8 @@ class TestKannalaBrandtProjection:
     def test_zero_distortion_equidistant(self, K_standard):
         """With D=zeros, projects via θ = atan2(r, z), θ_d = θ."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0, 0, 0, 0],
+            K=K_standard,
+            D=[0, 0, 0, 0],
             projection_model=ProjectionModel.KannalaBrandt,
         )
         # Point at 45° from optical axis
@@ -164,7 +182,8 @@ class TestKannalaBrandtProjection:
     def test_wide_angle_point(self, K_standard):
         """Points at very wide angles still project (no crash)."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.01, -0.005, 0.001, -0.0005],
+            K=K_standard,
+            D=[0.01, -0.005, 0.001, -0.0005],
             projection_model=ProjectionModel.KannalaBrandt,
         )
         # 89° from axis
@@ -176,7 +195,8 @@ class TestKannalaBrandtProjection:
     def test_differs_from_pinhole(self, K_standard):
         """KannalaBrandt projection differs from pinhole for off-axis points."""
         cam_kb = tf.CameraProjection(
-            K=K_standard, D=[0, 0, 0, 0],
+            K=K_standard,
+            D=[0, 0, 0, 0],
             projection_model=ProjectionModel.KannalaBrandt,
         )
         cam_pin = tf.CameraProjection(K=K_standard, projection_model=ProjectionModel.Pinhole)
@@ -191,12 +211,14 @@ class TestKannalaBrandtProjection:
 # Rational
 # ---------------------------------------------------------------------------
 
+
 class TestRationalProjection:
     """Rational polynomial model."""
 
     def test_on_axis_projects_to_principal_point(self, K_standard):
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.001, 0.002, 0.01, 0.05, -0.02, 0.01],
+            K=K_standard,
+            D=[0.1, -0.05, 0.001, 0.002, 0.01, 0.05, -0.02, 0.01],
             projection_model=ProjectionModel.Rational,
         )
         pts = np.array([[0.0, 0.0, 10.0]])
@@ -208,10 +230,14 @@ class TestRationalProjection:
         D_bc = [0.1, -0.05, 0.001, 0.002, 0.01]
         D_rat = [0.1, -0.05, 0.001, 0.002, 0.01, 0, 0, 0]
         cam_bc = tf.CameraProjection(
-            K=K_standard, D=D_bc, projection_model=ProjectionModel.BrownConrady,
+            K=K_standard,
+            D=D_bc,
+            projection_model=ProjectionModel.BrownConrady,
         )
         cam_rat = tf.CameraProjection(
-            K=K_standard, D=D_rat, projection_model=ProjectionModel.Rational,
+            K=K_standard,
+            D=D_rat,
+            projection_model=ProjectionModel.Rational,
         )
         pts = np.array([[1.5, -0.5, 8.0], [0.3, 2.1, 3.0]])
         np.testing.assert_allclose(cam_rat._apply(pts), cam_bc._apply(pts), atol=1e-10)
@@ -219,7 +245,8 @@ class TestRationalProjection:
     def test_full_eight_coefficient_distortion(self, K_standard):
         """All 8 coefficients produce finite results."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.001, 0.002, 0.01, 0.05, -0.02, 0.01],
+            K=K_standard,
+            D=[0.1, -0.05, 0.001, 0.002, 0.01, 0.05, -0.02, 0.01],
             projection_model=ProjectionModel.Rational,
         )
         pts = np.array([[1.0, 1.0, 5.0]])
@@ -231,12 +258,15 @@ class TestRationalProjection:
 # Division
 # ---------------------------------------------------------------------------
 
+
 class TestDivisionProjection:
     """Division undistortion model."""
 
     def test_on_axis_projects_to_principal_point(self, K_standard):
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.5], projection_model=ProjectionModel.Division,
+            K=K_standard,
+            D=[0.5],
+            projection_model=ProjectionModel.Division,
         )
         pts = np.array([[0.0, 0.0, 10.0]])
         uv = cam._apply(pts)
@@ -245,7 +275,9 @@ class TestDivisionProjection:
     def test_zero_coefficient_matches_pinhole(self, K_standard):
         """Division with k1=0 → scale = 1/(1+0) = 1 → pinhole."""
         cam_div = tf.CameraProjection(
-            K=K_standard, D=[0.0], projection_model=ProjectionModel.Division,
+            K=K_standard,
+            D=[0.0],
+            projection_model=ProjectionModel.Division,
         )
         cam_pin = tf.CameraProjection(K=K_standard, projection_model=ProjectionModel.Pinhole)
         pts = np.array([[1.0, 0.5, 5.0]])
@@ -254,10 +286,14 @@ class TestDivisionProjection:
     def test_positive_k1_compresses(self, K_standard):
         """Positive k1 compresses the image (points move toward center)."""
         cam_no = tf.CameraProjection(
-            K=K_standard, D=[0.0], projection_model=ProjectionModel.Division,
+            K=K_standard,
+            D=[0.0],
+            projection_model=ProjectionModel.Division,
         )
         cam_div = tf.CameraProjection(
-            K=K_standard, D=[0.5], projection_model=ProjectionModel.Division,
+            K=K_standard,
+            D=[0.5],
+            projection_model=ProjectionModel.Division,
         )
         pts = np.array([[1.0, 1.0, 5.0]])
         uv_no = cam_no._apply(pts)
@@ -270,7 +306,9 @@ class TestDivisionProjection:
     def test_empty_distortion_defaults_to_zero(self, K_standard):
         """Division with empty D defaults k1=0 → pinhole equivalent."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[], projection_model=ProjectionModel.Division,
+            K=K_standard,
+            D=[],
+            projection_model=ProjectionModel.Division,
         )
         cam_pin = tf.CameraProjection(K=K_standard, projection_model=ProjectionModel.Pinhole)
         pts = np.array([[2.0, -1.0, 8.0]])
@@ -281,13 +319,15 @@ class TestDivisionProjection:
 # MeiUnified
 # ---------------------------------------------------------------------------
 
+
 class TestMeiUnifiedProjection:
     """Mei Unified omnidirectional camera model."""
 
     def test_xi_zero_approaches_pinhole(self, K_standard):
         """When ξ=0 and no radial distortion, Mei → pinhole (normalized by z/||p||)."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.0, 0.0, 0.0],
+            K=K_standard,
+            D=[0.0, 0.0, 0.0],
             projection_model=ProjectionModel.MeiUnified,
         )
         # On-axis point: unit sphere z = 1 → denom = z + ξ = 1 → x=0, y=0 → cx, cy
@@ -298,10 +338,14 @@ class TestMeiUnifiedProjection:
     def test_xi_nonzero_changes_projection(self, K_standard):
         """Non-zero ξ changes the projection compared to ξ=0."""
         cam_xi0 = tf.CameraProjection(
-            K=K_standard, D=[0.0], projection_model=ProjectionModel.MeiUnified,
+            K=K_standard,
+            D=[0.0],
+            projection_model=ProjectionModel.MeiUnified,
         )
         cam_xi1 = tf.CameraProjection(
-            K=K_standard, D=[1.0], projection_model=ProjectionModel.MeiUnified,
+            K=K_standard,
+            D=[1.0],
+            projection_model=ProjectionModel.MeiUnified,
         )
         pts = np.array([[1.0, 0.0, 5.0]])
         uv_0 = cam_xi0._apply(pts)
@@ -313,7 +357,9 @@ class TestMeiUnifiedProjection:
         """On-axis point always → (cx, cy) regardless of ξ."""
         for xi in [0.0, 0.5, 1.0, 2.0]:
             cam = tf.CameraProjection(
-                K=K_standard, D=[xi], projection_model=ProjectionModel.MeiUnified,
+                K=K_standard,
+                D=[xi],
+                projection_model=ProjectionModel.MeiUnified,
             )
             uv = cam._apply(np.array([[0.0, 0.0, 5.0]]))
             np.testing.assert_allclose(uv[0], [320.0, 240.0], atol=1e-10)
@@ -321,11 +367,13 @@ class TestMeiUnifiedProjection:
     def test_with_radial_distortion(self, K_standard):
         """Mei with radial coefficients k1, k2 differs from without."""
         cam_no_rad = tf.CameraProjection(
-            K=K_standard, D=[1.0, 0.0, 0.0],
+            K=K_standard,
+            D=[1.0, 0.0, 0.0],
             projection_model=ProjectionModel.MeiUnified,
         )
         cam_rad = tf.CameraProjection(
-            K=K_standard, D=[1.0, 0.1, -0.05],
+            K=K_standard,
+            D=[1.0, 0.1, -0.05],
             projection_model=ProjectionModel.MeiUnified,
         )
         pts = np.array([[2.0, 1.0, 5.0]])
@@ -336,7 +384,8 @@ class TestMeiUnifiedProjection:
     def test_wide_angle_finite(self, K_standard):
         """Very wide angle points (near 90°) produce finite results."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[1.0, 0.01, -0.005],
+            K=K_standard,
+            D=[1.0, 0.01, -0.005],
             projection_model=ProjectionModel.MeiUnified,
         )
         pts = np.array([[10.0, 0.0, 0.1]])  # nearly perpendicular
@@ -348,12 +397,14 @@ class TestMeiUnifiedProjection:
 # Fisheye62
 # ---------------------------------------------------------------------------
 
+
 class TestFisheye62Projection:
     """Project Aria Fisheye62 model."""
 
     def test_on_axis_projects_to_principal_point(self, K_standard):
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.01, -0.005, 0.001, -0.001],
+            K=K_standard,
+            D=[0.1, -0.05, 0.01, -0.005, 0.001, -0.001],
             projection_model=ProjectionModel.Fisheye62,
         )
         pts = np.array([[0.0, 0.0, 10.0]])
@@ -363,11 +414,13 @@ class TestFisheye62Projection:
     def test_zero_distortion_matches_kannala_brandt(self, K_standard):
         """Fisheye62 with D=zeros and no tangential → same angular model as KB."""
         cam_kb = tf.CameraProjection(
-            K=K_standard, D=[0, 0, 0, 0],
+            K=K_standard,
+            D=[0, 0, 0, 0],
             projection_model=ProjectionModel.KannalaBrandt,
         )
         cam_f62 = tf.CameraProjection(
-            K=K_standard, D=[0, 0, 0, 0, 0, 0],
+            K=K_standard,
+            D=[0, 0, 0, 0, 0, 0],
             projection_model=ProjectionModel.Fisheye62,
         )
         pts = np.array([[1.0, 0.5, 5.0]])
@@ -379,11 +432,13 @@ class TestFisheye62Projection:
     def test_tangential_coefficients_change_result(self, K_standard):
         """Non-zero p0, p1 change the projection."""
         cam_no_tan = tf.CameraProjection(
-            K=K_standard, D=[0.01, 0, 0, 0, 0, 0],
+            K=K_standard,
+            D=[0.01, 0, 0, 0, 0, 0],
             projection_model=ProjectionModel.Fisheye62,
         )
         cam_tan = tf.CameraProjection(
-            K=K_standard, D=[0.01, 0, 0, 0, 0.005, 0.003],
+            K=K_standard,
+            D=[0.01, 0, 0, 0, 0.005, 0.003],
             projection_model=ProjectionModel.Fisheye62,
         )
         pts = np.array([[1.0, 1.0, 5.0]])
@@ -396,13 +451,15 @@ class TestFisheye62Projection:
 # Distortion-aware transform_points
 # ---------------------------------------------------------------------------
 
+
 class TestTransformPointsDistortionAware:
     """transform_points uses full model projection for CameraProjection."""
 
     def test_preserves_depth(self, K_standard):
         """transform_points returns [u·z, v·z, z] (depth preserved)."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.001, 0.002, 0.01],
+            K=K_standard,
+            D=[0.1, -0.05, 0.001, 0.002, 0.01],
             projection_model=ProjectionModel.BrownConrady,
         )
         pts = np.array([[1.0, 0.5, 8.0]])
@@ -413,7 +470,8 @@ class TestTransformPointsDistortionAware:
     def test_pixel_coordinates_match_project_points(self, K_standard):
         """u·z/z and v·z/z from transform_points match project_points output."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.1, -0.05, 0.001, 0.002, 0.01],
+            K=K_standard,
+            D=[0.1, -0.05, 0.001, 0.002, 0.01],
             projection_model=ProjectionModel.BrownConrady,
         )
         pts = np.array([[1.0, 0.5, 8.0], [0.0, 0.0, 5.0]])
@@ -430,7 +488,8 @@ class TestTransformPointsDistortionAware:
         graph = tf.TransformGraph()
         graph.add_transform("world", "camera", tf.Translation(0, 0, 0))
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.01, -0.005, 0.001, -0.0005],
+            K=K_standard,
+            D=[0.01, -0.005, 0.001, -0.0005],
             projection_model=ProjectionModel.KannalaBrandt,
         )
         graph.add_transform("camera", "image", cam)
@@ -454,7 +513,8 @@ class TestTransformPointsDistortionAware:
     def test_mei_unified_transform_points(self, K_standard):
         """MeiUnified model works through transform_points."""
         cam = tf.CameraProjection(
-            K=K_standard, D=[0.5, 0.01, -0.005],
+            K=K_standard,
+            D=[0.5, 0.01, -0.005],
             projection_model=ProjectionModel.MeiUnified,
         )
         pts = np.array([[1.0, 0.5, 5.0]])
@@ -469,6 +529,7 @@ class TestTransformPointsDistortionAware:
 # ---------------------------------------------------------------------------
 # ProjectionModel from_string — MeiUnified
 # ---------------------------------------------------------------------------
+
 
 class TestProjectionModelMeiUnified:
     """Test MeiUnified enum membership and from_string."""
