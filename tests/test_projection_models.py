@@ -174,7 +174,6 @@ class TestKannalaBrandtProjection:
         pts = np.array([[1.0, 0.0, 1.0]])
         uv = cam._apply(pts)
         theta = np.arctan2(1.0, 1.0)  # π/4
-        expected_u = 500.0 * theta * (1.0 / np.sqrt(2)) / (1.0 / np.sqrt(2)) + 320.0
         # scale = theta / r where r = 1.0, so x_d = 1.0 * (θ / 1.0) = θ
         expected_u = 500.0 * theta + 320.0
         np.testing.assert_allclose(uv[0, 0], expected_u, atol=1e-8)

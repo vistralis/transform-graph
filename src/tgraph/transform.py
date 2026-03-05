@@ -1249,6 +1249,22 @@ class CameraProjection(Projection):
     # Polynomial evaluation uses Horner form: p(θ²) = ((k4·θ² + k3)·θ² + k2)·θ² + k1
     # ------------------------------------------------------------------
 
+    def _get_padded_dist_coeffs(self, count: int) -> np.ndarray:
+        """Return distortion coefficients padded with zeros to the requested length.
+
+        Args:
+            count: Number of coefficients to return.
+
+        Returns:
+            Array of length ``count`` with available coefficients filled in and
+            the remainder set to zero.
+        """
+        coeffs = np.zeros(count, dtype=self.dtype)
+        num_present = min(len(self._dist_coeffs), count)
+        if num_present > 0:
+            coeffs[:num_present] = self._dist_coeffs[:num_present]
+        return coeffs
+
     def _project_pinhole(self, pts: np.ndarray) -> np.ndarray:
         """Ideal pinhole: normalize by z, apply K. No distortion."""
         z = np.where(np.abs(pts[:, 2]) < _DEPTH_EPS, _DEPTH_EPS, pts[:, 2])
@@ -1296,11 +1312,7 @@ class CameraProjection(Projection):
         r = np.sqrt(x * x + y * y)
         theta = np.arctan2(r, z)
 
-        d = self._dist_coeffs
-        k1 = d[0] if len(d) > 0 else 0.0
-        k2 = d[1] if len(d) > 1 else 0.0
-        k3 = d[2] if len(d) > 2 else 0.0
-        k4 = d[3] if len(d) > 3 else 0.0
+        k1, k2, k3, k4 = self._get_padded_dist_coeffs(4)
 
         theta2 = theta * theta
         # Horner form: θ·(1 + θ²·(k1 + θ²·(k2 + θ²·(k3 + θ²·k4))))
@@ -1328,15 +1340,7 @@ class CameraProjection(Projection):
         x = pts[:, 0] / z
         y = pts[:, 1] / z
 
-        d = self._dist_coeffs
-        k1 = d[0] if len(d) > 0 else 0.0
-        k2 = d[1] if len(d) > 1 else 0.0
-        p1 = d[2] if len(d) > 2 else 0.0
-        p2 = d[3] if len(d) > 3 else 0.0
-        k3 = d[4] if len(d) > 4 else 0.0
-        k4 = d[5] if len(d) > 5 else 0.0
-        k5 = d[6] if len(d) > 6 else 0.0
-        k6 = d[7] if len(d) > 7 else 0.0
+        k1, k2, p1, p2, k3, k4, k5, k6 = self._get_padded_dist_coeffs(8)
 
         r2 = x * x + y * y
 
@@ -1366,8 +1370,7 @@ class CameraProjection(Projection):
         x = pts[:, 0] / z
         y = pts[:, 1] / z
 
-        d = self._dist_coeffs
-        k1 = d[0] if len(d) > 0 else 0.0
+        (k1,) = self._get_padded_dist_coeffs(1)
 
         r2 = x * x + y * y
         denom = 1.0 + k1 * r2
@@ -1394,10 +1397,7 @@ class CameraProjection(Projection):
         y = pts[:, 1] / safe_norm
         z = pts[:, 2] / safe_norm
 
-        d = self._dist_coeffs
-        xi = d[0] if len(d) > 0 else 0.0
-        k1 = d[1] if len(d) > 1 else 0.0
-        k2 = d[2] if len(d) > 2 else 0.0
+        xi, k1, k2 = self._get_padded_dist_coeffs(3)
 
         denom = z + xi
         safe_denom = np.where(np.abs(denom) < _DENOM_EPS, _DENOM_EPS, denom)
@@ -1425,13 +1425,7 @@ class CameraProjection(Projection):
         r = np.sqrt(x * x + y * y)
         theta = np.arctan2(r, z)
 
-        d = self._dist_coeffs
-        k0 = d[0] if len(d) > 0 else 0.0
-        k1 = d[1] if len(d) > 1 else 0.0
-        k2 = d[2] if len(d) > 2 else 0.0
-        k3 = d[3] if len(d) > 3 else 0.0
-        p0 = d[4] if len(d) > 4 else 0.0
-        p1 = d[5] if len(d) > 5 else 0.0
+        k0, k1, k2, k3, p0, p1 = self._get_padded_dist_coeffs(6)
 
         theta2 = theta * theta
         # Horner form: θ·(1 + θ²·(k0 + θ²·(k1 + θ²·(k2 + θ²·k3))))
