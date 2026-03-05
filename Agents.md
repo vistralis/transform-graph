@@ -1,4 +1,4 @@
-# Agents — Engineering Guide for transform-graph v0.1.0
+# Agents — Engineering Guide for transform-graph v0.1.1
 
 This document is the authoritative reference for AI agents and developers working
 on or consuming the `transform-graph` library. All code changes must adhere to
@@ -169,9 +169,9 @@ pytest --cov=tgraph --cov-report=term-missing
 pdoc --math -t docs/templates -o docs/build tgraph
 ```
 
-**Current Metrics (v0.1.0):**
-- Test files: 13, Tests: 214
-- Coverage: 94% overall, 95% on `transform.py`
+**Current Metrics (v0.1.1):**
+- Test files: 14, Tests: 265
+- Coverage: 94% overall, 96% on `transform.py`
 - Docstring coverage: 100% public API
 - TODOs / FIXMEs: 0
 

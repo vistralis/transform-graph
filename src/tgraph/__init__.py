@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-# tgraph — Spatial Transformations for Robotics and Computer Vision
+# transform-graph — Spatial Transformations for Robotics and Computer Vision
 
-`tgraph` is the foundational mathematical layer for Spatial AI and Robotics in Python.
+`transform-graph` is the foundational mathematical layer for Spatial AI and Robotics in Python.
 It provides strict-typed handling of SE(3) rigid body transformations, camera and
 orthographic projections, and a frame graph for automatic path composition.
 
@@ -124,7 +124,7 @@ from .transform import (
     transform_points,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "BaseTransform",

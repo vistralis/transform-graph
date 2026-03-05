@@ -25,7 +25,7 @@ class TestCameraProjectionConstruction:
         """CameraProjection from K matrix preserves intrinsics."""
         cam = tf.CameraProjection(K=K_simple)
         np.testing.assert_allclose(cam.intrinsic_matrix, K_simple)
-        assert cam.projection_model == ProjectionModel.PINHOLE
+        assert cam.projection_model == ProjectionModel.Pinhole
         assert len(cam.dist_coeffs) == 0
 
     def test_from_intrinsic_matrix(self, K_simple):
@@ -58,9 +58,9 @@ class TestCameraProjectionDistortion:
         cam = tf.CameraProjection(
             K=K_simple,
             dist_coeffs=D,
-            projection_model=ProjectionModel.PINHOLE_POLYNOMIAL,
+            projection_model=ProjectionModel.BrownConrady,
         )
-        assert cam.projection_model == ProjectionModel.PINHOLE_POLYNOMIAL
+        assert cam.projection_model == ProjectionModel.BrownConrady
         np.testing.assert_allclose(cam.dist_coeffs, D)
         np.testing.assert_allclose(cam.distortion_coefficients, D)
 
@@ -70,14 +70,14 @@ class TestCameraProjectionDistortion:
         cam = tf.CameraProjection(
             K=K_simple,
             dist_coeffs=D,
-            projection_model=ProjectionModel.PINHOLE_POLYNOMIAL,
+            projection_model=ProjectionModel.BrownConrady,
         )
         data = cam.to_dict()
         assert data["dist_coeffs"] == D
-        assert data["projection_model"] == "Pinhole+Polynomial"
+        assert data["projection_model"] == "BrownConrady"
 
         cam2 = tf.CameraProjection.from_dict(data)
-        assert cam2.projection_model == ProjectionModel.PINHOLE_POLYNOMIAL
+        assert cam2.projection_model == ProjectionModel.BrownConrady
         np.testing.assert_allclose(cam2.dist_coeffs, D)
 
     def test_all_projection_models(self):
@@ -90,7 +90,7 @@ class TestCameraProjectionDistortion:
     def test_string_model_init(self):
         """ProjectionModel from string."""
         cam = tf.CameraProjection(np.eye(3), projection_model="Fisheye")
-        assert cam.projection_model == ProjectionModel.FISHEYE
+        assert cam.projection_model == ProjectionModel.KannalaBrandt
 
 
 # ---------------------------------------------------------------------------
