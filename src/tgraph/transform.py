@@ -106,36 +106,86 @@ def as_roll_pitch_yaw(
     return (roll, pitch, yaw)
 
 
+# ---------------------------------------------------------------------------
+# Numerical constants — projection
+# ---------------------------------------------------------------------------
+_DEPTH_EPS = 1e-10
+"""Guard for z-division in perspective projection (prevents divide-by-zero)."""
+
+_RADIAL_EPS = 1e-10
+"""Guard for r-division in equidistant models (on-axis singularity)."""
+
+_NORM_EPS = 1e-10
+"""Guard for point norm in spherical models (zero-length point)."""
+
+_DENOM_EPS = 1e-10
+"""Guard for rational model denominators (prevents division instability)."""
+
+
 class ProjectionModel(Enum):
     """
-    Enum for different camera projection models.
+    Supported camera projection models.
 
-    Supported models:
-    - PINHOLE: Standard pinhole camera model (no distortion)
-    - PINHOLE_POLYNOMIAL: Pinhole with polynomial radial/tangential distortion (OpenCV-style)
-    - FISHEYE: Fisheye camera model
-    - OMNIDIRECTIONAL: Omnidirectional camera model
+    Each member represents a complete 3D → 2D projection function, covering
+    both the ideal projection geometry and its associated distortion model.
+
+    Models:
+
+    - Pinhole: Ideal perspective projection, no distortion.
+      Parameters: fx, fy, cx, cy.
+    - BrownConrady: Pinhole + radial/tangential distortion.
+      D = (k1, k2, p1, p2, k3). OpenCV default, ROS ``plumb_bob``.
+    - KannalaBrandt: Fisheye / equidistant.
+      D = (k1, k2, k3, k4). ``cv2.fisheye``, ROS ``kannala_brandt``.
+    - Division: Simple wide-angle with single division coefficient.
+      D = (k1,).
+    - Rational: Full rational polynomial.
+      D = (k1, k2, p1, p2, k3, k4, k5, k6). ROS ``rational_polynomial``.
+    - Fisheye62: Project Aria fisheye model.
+      D = (k0, k1, k2, k3, p0, p1).
+    - MeiUnified: Unified omnidirectional camera model (Mei 2007).
+      D = (xi, k1, k2). Used by KITTI-360 fisheye cameras.
     """
 
-    PINHOLE = "Pinhole"
-    PINHOLE_POLYNOMIAL = "Pinhole+Polynomial"
-    FISHEYE = "Fisheye"
-    OMNIDIRECTIONAL = "Omnidirectional"
+    Pinhole = "Pinhole"
+    BrownConrady = "BrownConrady"
+    KannalaBrandt = "KannalaBrandt"
+    Division = "Division"
+    Rational = "Rational"
+    Fisheye62 = "Fisheye62"
+    MeiUnified = "MeiUnified"
 
     @classmethod
     def from_string(cls, model_str: str) -> ProjectionModel:
-        """Convert a string to a ProjectionModel enum value."""
-        # Try exact match first
+        """Convert a string to a ProjectionModel enum value.
+
+        Accepts ROS ``distortion_model`` names and legacy tgraph names.
+        """
+        _aliases = {
+            # ROS camera_info distortion_model names
+            "plumb_bob": cls.BrownConrady,
+            "rational_polynomial": cls.Rational,
+            "kannala_brandt": cls.KannalaBrandt,
+            "fisheye62": cls.Fisheye62,
+            # Legacy tgraph names
+            "Fisheye": cls.KannalaBrandt,
+            "Omnidirectional": cls.Division,
+            "Pinhole+Polynomial": cls.BrownConrady,
+        }
+        if model_str in _aliases:
+            return _aliases[model_str]
+        # Exact value match
         for model in cls:
             if model.value == model_str:
                 return model
-        # Try case-insensitive name match
-        model_str_upper = model_str.upper().replace("+", "_").replace("-", "_")
+        # Case-insensitive name match
+        lower = model_str.lower().replace("_", "").replace("-", "").replace("+", "")
         for model in cls:
-            if model.name == model_str_upper:
+            if model.name.lower() == lower:
                 return model
         raise ValueError(
-            f"Unknown projection model: {model_str}. Valid options: {[m.value for m in cls]}"
+            f"Unknown projection model: {model_str}. "
+            f"Valid: {[m.value for m in cls]}"
         )
 
 
@@ -1038,7 +1088,7 @@ class CameraProjection(Projection):
         Args:
             intrinsic_matrix: 3x3 camera intrinsic matrix K.
             dist_coeffs: Distortion coefficients (OpenCV ordering: k1,k2,p1,p2,k3,...).
-            projection_model: Camera model (PINHOLE, PINHOLE_POLYNOMIAL, FISHEYE, etc.).
+            projection_model: Camera model (PINHOLE, BROWN_CONRADY, KANNALA_BRANDT, etc.).
             image_size: Image dimensions (width, height) in pixels.
             dtype: Data type for matrices.
             K: Alias for intrinsic_matrix.
@@ -1064,9 +1114,9 @@ class CameraProjection(Projection):
         # Handle projection model
         if projection_model is None:
             if len(self._dist_coeffs) > 0:
-                self._projection_model = ProjectionModel.PINHOLE_POLYNOMIAL
+                self._projection_model = ProjectionModel.BrownConrady
             else:
-                self._projection_model = ProjectionModel.PINHOLE
+                self._projection_model = ProjectionModel.Pinhole
         elif isinstance(projection_model, str):
             self._projection_model = ProjectionModel.from_string(projection_model)
         else:
@@ -1141,7 +1191,7 @@ class CameraProjection(Projection):
 
     @property
     def projection_model(self) -> ProjectionModel:
-        """The camera projection model (PINHOLE, PINHOLE_POLYNOMIAL, FISHEYE, etc.)."""
+        """The camera projection model (PINHOLE, BROWN_CONRADY, KANNALA_BRANDT, etc.)."""
         return self._projection_model
 
     @property
@@ -1162,56 +1212,246 @@ class CameraProjection(Projection):
 
     def _apply(self, vector: np.ndarray | list | tuple) -> np.ndarray:
         """
-        Project 3D points to 2D pixel coordinates, applying distortion if present.
+        Project 3D points to 2D pixel coordinates using the full projection model.
+
+        Dispatches to the correct projection function based on ``projection_model``.
+        Each model implements the complete 3D → 2D pipeline including distortion.
 
         Args:
-            vector: Nx3 points in camera frame.
+            vector: Nx3 (or Nx4 homogeneous) points in camera frame.
 
         Returns:
             np.ndarray: Nx2 pixel coordinates.
         """
         pts = np.atleast_2d(vector)
         if pts.shape[1] == 4:
-            # Drop w/homogenize
             pts = pts[:, :3] / pts[:, 3:4]
 
-        # 1. Project to normalized image plane
-        z = pts[:, 2]
-        x = pts[:, 0] / np.where(z == 0, 1e-10, z)
-        y = pts[:, 1] / np.where(z == 0, 1e-10, z)
+        model = self._projection_model
+        if model == ProjectionModel.Pinhole:
+            return self._project_pinhole(pts)
+        elif model == ProjectionModel.BrownConrady:
+            return self._project_brown_conrady(pts)
+        elif model == ProjectionModel.KannalaBrandt:
+            return self._project_kannala_brandt(pts)
+        elif model == ProjectionModel.Rational:
+            return self._project_rational(pts)
+        elif model == ProjectionModel.Division:
+            return self._project_division(pts)
+        elif model == ProjectionModel.MeiUnified:
+            return self._project_mei_unified(pts)
+        elif model == ProjectionModel.Fisheye62:
+            return self._project_fisheye62(pts)
+        else:
+            raise NotImplementedError(f"Projection not implemented for {model}")
 
-        # 2. Apply Distortion (Brown-Conrady / OpenCV model)
-        # k1, k2, p1, p2, k3
+    # ------------------------------------------------------------------
+    # Per-model projection implementations
+    #
+    # All methods use named numerical constants instead of magic numbers.
+    # Polynomial evaluation uses Horner form: p(θ²) = ((k4·θ² + k3)·θ² + k2)·θ² + k1
+    # ------------------------------------------------------------------
+
+    def _project_pinhole(self, pts: np.ndarray) -> np.ndarray:
+        """Ideal pinhole: normalize by z, apply K. No distortion."""
+        z = np.where(np.abs(pts[:, 2]) < _DEPTH_EPS, _DEPTH_EPS, pts[:, 2])
+        x = pts[:, 0] / z
+        y = pts[:, 1] / z
+        u = self.fx * x + self.cx
+        v = self.fy * y + self.cy
+        return np.column_stack([u, v])
+
+    def _project_brown_conrady(self, pts: np.ndarray) -> np.ndarray:
+        """Pinhole + Brown-Conrady radial/tangential distortion (OpenCV default).
+
+        D = (k1, k2, p1, p2 [, k3])
+        """
+        z = np.where(np.abs(pts[:, 2]) < _DEPTH_EPS, _DEPTH_EPS, pts[:, 2])
+        x = pts[:, 0] / z
+        y = pts[:, 1] / z
+
         d = self._dist_coeffs
         if len(d) >= 4:
             r2 = x * x + y * y
-            r4 = r2 * r2
-
-            k1 = d[0]
-            k2 = d[1]
-            p1 = d[2]
-            p2 = d[3]
+            k1, k2, p1, p2 = d[0], d[1], d[2], d[3]
             k3 = d[4] if len(d) > 4 else 0.0
 
-            # Radial
-            radial = 1.0 + k1 * r2 + k2 * r4 + k3 * r4 * r2
-
-            # Tangential
+            # Horner form: 1 + r²·(k1 + r²·(k2 + r²·k3))
+            radial = 1.0 + r2 * (k1 + r2 * (k2 + r2 * k3))
             x_tan = 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
             y_tan = p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+            x = x * radial + x_tan
+            y = y * radial + y_tan
 
-            x_dist = x * radial + x_tan
-            y_dist = y * radial + y_tan
-
-            x = x_dist
-            y = y_dist
-
-        # 3. Apply Intrinsics (K)
-        # u = fx * x + cx
-        # v = fy * y + cy
         u = self.fx * x + self.cx
         v = self.fy * y + self.cy
+        return np.column_stack([u, v])
 
+    def _project_kannala_brandt(self, pts: np.ndarray) -> np.ndarray:
+        """Kannala-Brandt equidistant fisheye model (OpenCV cv2.fisheye).
+
+        D = (k1, k2, k3, k4)
+
+        Projects via θ_d = θ·(1 + k1·θ² + k2·θ⁴ + k3·θ⁶ + k4·θ⁸)
+        where θ = atan2(r, z), and the distorted point is scaled by θ_d/r.
+        """
+        x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+        r = np.sqrt(x * x + y * y)
+        theta = np.arctan2(r, z)
+
+        d = self._dist_coeffs
+        k1 = d[0] if len(d) > 0 else 0.0
+        k2 = d[1] if len(d) > 1 else 0.0
+        k3 = d[2] if len(d) > 2 else 0.0
+        k4 = d[3] if len(d) > 3 else 0.0
+
+        theta2 = theta * theta
+        # Horner form: θ·(1 + θ²·(k1 + θ²·(k2 + θ²·(k3 + θ²·k4))))
+        theta_d = theta * (1 + theta2 * (k1 + theta2 * (k2 + theta2 * (k3 + theta2 * k4))))
+
+        # Scale factor: θ_d / r (safe division for on-axis points where r → 0)
+        safe_r = np.where(r < _RADIAL_EPS, 1.0, r)
+        scale = np.where(r < _RADIAL_EPS, 1.0, theta_d / safe_r)
+        x_d = x * scale
+        y_d = y * scale
+
+        u = self.fx * x_d + self.cx
+        v = self.fy * y_d + self.cy
+        return np.column_stack([u, v])
+
+    def _project_rational(self, pts: np.ndarray) -> np.ndarray:
+        """Rational polynomial model (OpenCV CALIB_RATIONAL_MODEL).
+
+        D = (k1, k2, p1, p2, k3, k4, k5, k6)
+
+        Radial: (1 + k1·r² + k2·r⁴ + k3·r⁶) / (1 + k4·r² + k5·r⁴ + k6·r⁶)
+        Plus tangential distortion (p1, p2).
+        """
+        z = np.where(np.abs(pts[:, 2]) < _DEPTH_EPS, _DEPTH_EPS, pts[:, 2])
+        x = pts[:, 0] / z
+        y = pts[:, 1] / z
+
+        d = self._dist_coeffs
+        k1 = d[0] if len(d) > 0 else 0.0
+        k2 = d[1] if len(d) > 1 else 0.0
+        p1 = d[2] if len(d) > 2 else 0.0
+        p2 = d[3] if len(d) > 3 else 0.0
+        k3 = d[4] if len(d) > 4 else 0.0
+        k4 = d[5] if len(d) > 5 else 0.0
+        k5 = d[6] if len(d) > 6 else 0.0
+        k6 = d[7] if len(d) > 7 else 0.0
+
+        r2 = x * x + y * y
+
+        # Horner form for numerator and denominator
+        numerator = 1.0 + r2 * (k1 + r2 * (k2 + r2 * k3))
+        denominator = 1.0 + r2 * (k4 + r2 * (k5 + r2 * k6))
+        safe_denom = np.where(np.abs(denominator) < _DENOM_EPS, _DENOM_EPS, denominator)
+        radial = numerator / safe_denom
+
+        x_tan = 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+        y_tan = p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+        x = x * radial + x_tan
+        y = y * radial + y_tan
+
+        u = self.fx * x + self.cx
+        v = self.fy * y + self.cy
+        return np.column_stack([u, v])
+
+    def _project_division(self, pts: np.ndarray) -> np.ndarray:
+        """Division undistortion model.
+
+        D = (k1,)
+
+        Distorted: x_d = x / (1 + k1·r²). Simple single-parameter wide-angle model.
+        """
+        z = np.where(np.abs(pts[:, 2]) < _DEPTH_EPS, _DEPTH_EPS, pts[:, 2])
+        x = pts[:, 0] / z
+        y = pts[:, 1] / z
+
+        d = self._dist_coeffs
+        k1 = d[0] if len(d) > 0 else 0.0
+
+        r2 = x * x + y * y
+        denom = 1.0 + k1 * r2
+        safe_denom = np.where(np.abs(denom) < _DENOM_EPS, _DENOM_EPS, denom)
+        x = x / safe_denom
+        y = y / safe_denom
+
+        u = self.fx * x + self.cx
+        v = self.fy * y + self.cy
+        return np.column_stack([u, v])
+
+    def _project_mei_unified(self, pts: np.ndarray) -> np.ndarray:
+        """Mei Unified omnidirectional camera model.
+
+        D = (xi [, k1, k2])
+
+        Projects onto unit sphere, then divides by (z + xi) to model the
+        mirror/sphere, applies radial distortion, then scales by focal
+        length and principal point.
+        """
+        norm = np.sqrt(pts[:, 0]**2 + pts[:, 1]**2 + pts[:, 2]**2)
+        safe_norm = np.where(norm < _NORM_EPS, _NORM_EPS, norm)
+        x = pts[:, 0] / safe_norm
+        y = pts[:, 1] / safe_norm
+        z = pts[:, 2] / safe_norm
+
+        d = self._dist_coeffs
+        xi = d[0] if len(d) > 0 else 0.0
+        k1 = d[1] if len(d) > 1 else 0.0
+        k2 = d[2] if len(d) > 2 else 0.0
+
+        denom = z + xi
+        safe_denom = np.where(np.abs(denom) < _DENOM_EPS, _DENOM_EPS, denom)
+        x = x / safe_denom
+        y = y / safe_denom
+
+        # Radial distortion (unconditional — branch-free)
+        r2 = x * x + y * y
+        radial = 1.0 + r2 * (k1 + r2 * k2)  # Horner form
+        x = x * radial
+        y = y * radial
+
+        u = self.fx * x + self.cx
+        v = self.fy * y + self.cy
+        return np.column_stack([u, v])
+
+    def _project_fisheye62(self, pts: np.ndarray) -> np.ndarray:
+        """Project Aria Fisheye62 model.
+
+        D = (k0, k1, k2, k3, p0, p1)
+
+        Equidistant-style with 4 radial + 2 tangential coefficients.
+        """
+        x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+        r = np.sqrt(x * x + y * y)
+        theta = np.arctan2(r, z)
+
+        d = self._dist_coeffs
+        k0 = d[0] if len(d) > 0 else 0.0
+        k1 = d[1] if len(d) > 1 else 0.0
+        k2 = d[2] if len(d) > 2 else 0.0
+        k3 = d[3] if len(d) > 3 else 0.0
+        p0 = d[4] if len(d) > 4 else 0.0
+        p1 = d[5] if len(d) > 5 else 0.0
+
+        theta2 = theta * theta
+        # Horner form: θ·(1 + θ²·(k0 + θ²·(k1 + θ²·(k2 + θ²·k3))))
+        theta_d = theta * (1 + theta2 * (k0 + theta2 * (k1 + theta2 * (k2 + theta2 * k3))))
+
+        safe_r = np.where(r < _RADIAL_EPS, 1.0, r)
+        scale = np.where(r < _RADIAL_EPS, 1.0, theta_d / safe_r)
+        x_d = x * scale
+        y_d = y * scale
+
+        # Tangential
+        r2_d = x_d * x_d + y_d * y_d
+        x_d = x_d + 2 * p0 * x_d * y_d + p1 * (r2_d + 2 * x_d * x_d)
+        y_d = y_d + p0 * (r2_d + 2 * y_d * y_d) + 2 * p1 * x_d * y_d
+
+        u = self.fx * x_d + self.cx
+        v = self.fy * y_d + self.cy
         return np.column_stack([u, v])
 
     def to_dict(self) -> dict[str, Any]:
@@ -2009,21 +2249,31 @@ def transform_points(
 
         # Check for projection (special handling for "transform_points" vs "project_points")
         if isinstance(transform, Projection):
-            # Projection._apply returns 2D.
-            # We want 3D [u*z, v*z, z] (unnormalized).
-            # P @ X_hom = [x', y', z'].
-            N = points.shape[0]
-            if points.shape[1] == 3:
-                hom_points = np.hstack([points, np.ones((N, 1), dtype=transform.dtype)])
-            elif points.shape[1] == 4:
-                hom_points = points
-            else:
-                raise ValueError("Points must be Nx3 or Nx4")
+            # CameraProjection needs full model-dispatched projection (distortion-aware).
+            # Other Projection subclasses (e.g., OrthographicProjection) are linear.
+            if isinstance(transform, CameraProjection):
+                pts = points
+                if pts.shape[1] == 4:
+                    pts = pts[:, :3] / pts[:, 3:4]
+                elif pts.shape[1] != 3:
+                    raise ValueError("Points must be Nx3 or Nx4")
 
-            # 4x4 or 3x4 mul => Nx4 or Nx3
-            res_hom = (transform.as_matrix() @ hom_points.T).T
-            # Return top 3 rows (x', y', z')
-            return res_hom[:, :3]
+                z = pts[:, 2]
+                uv = transform._apply(pts)  # full model projection → [u, v]
+                return np.column_stack([uv[:, 0] * z, uv[:, 1] * z, z])
+            else:
+                # Linear projection (OrthographicProjection etc.) — use matrix path
+                N = points.shape[0]
+                if points.shape[1] == 3:
+                    hom_points = np.hstack(
+                        [points, np.ones((N, 1), dtype=transform.dtype)]
+                    )
+                elif points.shape[1] == 4:
+                    hom_points = points
+                else:
+                    raise ValueError("Points must be Nx3 or Nx4")
+                res_hom = (transform.as_matrix() @ hom_points.T).T
+                return res_hom[:, :3]
 
         if not isinstance(
             transform,

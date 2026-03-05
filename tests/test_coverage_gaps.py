@@ -28,13 +28,25 @@ class TestProjectionModelFromString:
 
     def test_exact_value_match(self):
         """Exact enum value string matches."""
-        assert ProjectionModel.from_string("Pinhole") == ProjectionModel.PINHOLE
-        assert ProjectionModel.from_string("Fisheye") == ProjectionModel.FISHEYE
+        assert ProjectionModel.from_string("Pinhole") == ProjectionModel.Pinhole
+        assert ProjectionModel.from_string("BrownConrady") == ProjectionModel.BrownConrady
+        assert ProjectionModel.from_string("KannalaBrandt") == ProjectionModel.KannalaBrandt
+
+    def test_legacy_names(self):
+        """Legacy tgraph names still resolve."""
+        assert ProjectionModel.from_string("Fisheye") == ProjectionModel.KannalaBrandt
+        assert ProjectionModel.from_string("Pinhole+Polynomial") == ProjectionModel.BrownConrady
+
+    def test_ros_distortion_model_names(self):
+        """ROS camera_info distortion_model strings resolve correctly."""
+        assert ProjectionModel.from_string("plumb_bob") == ProjectionModel.BrownConrady
+        assert ProjectionModel.from_string("rational_polynomial") == ProjectionModel.Rational
+        assert ProjectionModel.from_string("kannala_brandt") == ProjectionModel.KannalaBrandt
 
     def test_case_insensitive_name(self):
-        """Case-insensitive name match (uppercase fallback path)."""
-        assert ProjectionModel.from_string("pinhole") == ProjectionModel.PINHOLE
-        assert ProjectionModel.from_string("PINHOLE") == ProjectionModel.PINHOLE
+        """Case-insensitive name match (fallback path)."""
+        assert ProjectionModel.from_string("pinhole") == ProjectionModel.Pinhole
+        assert ProjectionModel.from_string("brownconrady") == ProjectionModel.BrownConrady
 
     def test_unknown_raises(self):
         """Unknown projection model string raises ValueError."""
