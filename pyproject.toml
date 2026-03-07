@@ -7,7 +7,7 @@ name = "transform-graph"
 version = "0.1.1"
 description = "Spatial transformations for robotics and computer vision."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
   {name = "Vistralis Labs", email = "support@vistralis.org"}
@@ -26,7 +26,11 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
@@ -64,7 +68,7 @@ addopts = "-v --tb=short"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py310"
 
 [tool.ruff.lint]
 # E: pycodestyle errors
