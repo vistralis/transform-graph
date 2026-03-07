@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -82,9 +82,9 @@ def test_timestamp_frame_ids():
     """Verify that datetime timestamp frame IDs work for temporal graphs."""
     graph = TransformGraph()
 
-    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    t1 = datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC)
-    t2 = datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC)
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
+    t2 = datetime(2026, 1, 1, 12, 0, 2, tzinfo=timezone.utc)
 
     graph.add_transform(t0, t1, Transform(translation=[1.0, 0.0, 0.0]))
     graph.add_transform(t1, t2, Transform(translation=[0.0, 2.0, 0.0]))
@@ -287,8 +287,8 @@ def test_json_roundtrip_datetime_frames():
     """JSON roundtrip preserves datetime frame IDs via ISO 8601 encoding."""
     graph = TransformGraph()
 
-    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    t1 = datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC)
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
 
     graph.add_transform(t0, t1, Transform(translation=[3.0, 0.0, 0.0]))
 
@@ -328,9 +328,9 @@ def test_json_roundtrip_compound_ego_datetime_tuple():
     """
     graph = TransformGraph()
 
-    t0 = datetime(2026, 3, 5, 12, 0, 0, tzinfo=UTC)
-    t1 = datetime(2026, 3, 5, 12, 0, 1, tzinfo=UTC)
-    t2 = datetime(2026, 3, 5, 12, 0, 2, tzinfo=UTC)
+    t0 = datetime(2026, 3, 5, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 3, 5, 12, 0, 1, tzinfo=timezone.utc)
+    t2 = datetime(2026, 3, 5, 12, 0, 2, tzinfo=timezone.utc)
 
     # Ego chain with compound (name, datetime) keys
     graph.add_transform(("ego", t0), ("ego", t1), Transform(translation=[2.0, 0.0, 0.0]))
