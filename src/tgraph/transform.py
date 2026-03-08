@@ -490,6 +490,162 @@ class Transform(BaseTransform):
         rot_quat = quaternion.from_rotation_matrix(rot_mat)
         return cls(translation=translation, rotation=rot_quat, dtype=target_dtype)
 
+    @classmethod
+    def from_rotation_matrix(
+        cls,
+        rotation_matrix: np.ndarray,
+        t: np.ndarray | list | tuple | None = None,
+        *,
+        validate: bool = True,
+        dtype: np.dtype = np.float64,
+    ) -> Transform:
+        """Create a Transform from a 3x3 rotation matrix.
+
+        Args:
+            rotation_matrix: A 3x3 rotation matrix (must be SO(3) when
+                ``validate=True``).
+            t: Optional 3-element translation vector.
+            validate: If True (default), verify that ``rotation_matrix`` is a
+                valid SO(3) element (orthogonal with determinant +1). Set to
+                False to skip the check on trusted data. Follows the same
+                pattern as ``scipy.spatial.transform.Rotation.from_matrix``
+                with ``assume_valid``.
+            dtype: NumPy dtype for the resulting transform.
+
+        Returns:
+            Transform: The constructed SE(3) transform.
+
+        Raises:
+            ValueError: If the matrix is not 3x3 or fails SO(3) validation.
+
+        Example:
+            >>> R = np.eye(3)
+            >>> tf.Transform.from_rotation_matrix(R, t=[1, 2, 3])
+        """
+        R = np.asarray(rotation_matrix, dtype=np.float64)
+        if R.shape != (3, 3):
+            raise ValueError(f"Rotation matrix must be 3x3, got {R.shape}")
+
+        if validate:
+            # Check orthogonality: R^T R ≈ I
+            orthogonality_error = np.max(np.abs(R.T @ R - np.eye(3)))
+            if orthogonality_error > 1e-6:
+                raise ValueError(
+                    f"Rotation matrix is not orthogonal (max error {orthogonality_error:.2e}). "
+                    "Expected R^T R = I. Pass validate=False to skip this check."
+                )
+            # Check determinant ≈ +1 (proper rotation, not reflection)
+            det = np.linalg.det(R)
+            if abs(det - 1.0) > 1e-6:
+                raise ValueError(
+                    f"Rotation matrix determinant is {det:.6f}, expected +1.0 (SO(3)). "
+                    "A determinant of -1 indicates a reflection, not a rotation."
+                )
+
+        rot_quat = quaternion.from_rotation_matrix(R)
+        return cls(translation=t, rotation=rot_quat, dtype=dtype)
+
+    @classmethod
+    def from_quaternion(
+        cls,
+        q: quaternion.quaternion | np.ndarray | list | tuple,
+        t: np.ndarray | list | tuple | None = None,
+        *,
+        convention: str = "wxyz",
+        dtype: np.dtype = np.float64,
+    ) -> Transform:
+        """Create a Transform from a quaternion.
+
+        The quaternion is auto-normalized to unit length.
+
+        Args:
+            q: Quaternion — either a ``quaternion.quaternion`` object or a
+                4-element array. The element order is determined by
+                ``convention``.
+            t: Optional 3-element translation vector.
+            convention: Element ordering of array input:
+                ``"wxyz"`` (default, numpy-quaternion / Hamilton) or
+                ``"xyzw"`` (scipy / ROS). Ignored when ``q`` is a
+                ``quaternion.quaternion`` object.
+            dtype: NumPy dtype for the resulting transform.
+
+        Returns:
+            Transform: The constructed SE(3) transform.
+
+        Raises:
+            ValueError: If the quaternion is zero or the convention is unknown.
+
+        Example:
+            >>> tf.Transform.from_quaternion([1, 0, 0, 0])  # wxyz identity
+            >>> tf.Transform.from_quaternion([0, 0, 0, 1], convention="xyzw")
+        """
+        if isinstance(q, quaternion.quaternion):
+            quat = q
+        else:
+            arr = np.asarray(q, dtype=np.float64).ravel()
+            if arr.size != 4:
+                raise ValueError(f"Quaternion must have 4 elements, got {arr.size}")
+            if convention == "wxyz":
+                quat = quaternion.quaternion(*arr)
+            elif convention == "xyzw":
+                x, y, z, w = arr
+                quat = quaternion.quaternion(w, x, y, z)
+            else:
+                raise ValueError(
+                    f"Unknown quaternion convention '{convention}'. "
+                    "Use 'wxyz' (numpy-quaternion) or 'xyzw' (scipy/ROS)."
+                )
+
+        # Normalize — reject zero
+        norm = np.sqrt(quat.w**2 + quat.x**2 + quat.y**2 + quat.z**2)
+        if norm < 1e-15:
+            raise ValueError("Zero-norm quaternion cannot represent a rotation.")
+        quat = quat / norm
+
+        return cls(translation=t, rotation=quat, dtype=dtype)
+
+    @classmethod
+    def from_axis_angle(
+        cls,
+        axis: np.ndarray | list | tuple,
+        angle: float,
+        t: np.ndarray | list | tuple | None = None,
+        *,
+        dtype: np.dtype = np.float64,
+    ) -> Transform:
+        """Create a Transform from an axis-angle representation.
+
+        The axis is auto-normalized to unit length.
+
+        Args:
+            axis: 3-element rotation axis (will be normalized).
+            angle: Rotation angle in radians.
+            t: Optional 3-element translation vector.
+            dtype: NumPy dtype for the resulting transform.
+
+        Returns:
+            Transform: The constructed SE(3) transform.
+
+        Raises:
+            ValueError: If the axis has zero length.
+
+        Example:
+            >>> tf.Transform.from_axis_angle([0, 0, 1], np.pi / 2)
+        """
+        axis_array = np.asarray(axis, dtype=np.float64).ravel()
+        if axis_array.size != 3:
+            raise ValueError(f"Axis must have 3 elements, got {axis_array.size}")
+
+        axis_norm = np.linalg.norm(axis_array)
+        if axis_norm < 1e-15:
+            raise ValueError("Zero-length axis vector cannot define a rotation direction.")
+
+        axis_unit = axis_array / axis_norm
+        rotation_vector = axis_unit * float(angle)
+        rot_quat = quaternion.from_rotation_vector(rotation_vector)
+
+        return cls(translation=t, rotation=rot_quat, dtype=dtype)
+
     def as_matrix(self) -> np.ndarray:
         """Return the 4x4 homogeneous transformation matrix [R|t; 0 1]."""
         matrix = np.eye(4, dtype=self.dtype)
@@ -664,6 +820,68 @@ class Rotation(Transform):
             >>> roll, pitch, yaw = rotation.as_roll_pitch_yaw()
         """
         return as_roll_pitch_yaw(self.rotation)
+
+    @classmethod
+    def from_rotation_matrix(
+        cls,
+        rotation_matrix: np.ndarray,
+        *,
+        validate: bool = True,
+    ) -> Rotation:
+        """Create a Rotation from a 3x3 rotation matrix.
+
+        See :meth:`Transform.from_rotation_matrix` for full documentation.
+
+        Args:
+            rotation_matrix: A 3x3 rotation matrix.
+            validate: If True, verify SO(3) membership.
+
+        Returns:
+            Rotation: A rotation-only transform.
+        """
+        transform = Transform.from_rotation_matrix(rotation_matrix, validate=validate)
+        return cls(rotation=transform.rotation)
+
+    @classmethod
+    def from_quaternion(
+        cls,
+        q: quaternion.quaternion | np.ndarray | list | tuple,
+        *,
+        convention: str = "wxyz",
+    ) -> Rotation:
+        """Create a Rotation from a quaternion.
+
+        See :meth:`Transform.from_quaternion` for full documentation.
+
+        Args:
+            q: Quaternion (object or 4-element array).
+            convention: ``"wxyz"`` or ``"xyzw"``.
+
+        Returns:
+            Rotation: A rotation-only transform.
+        """
+        transform = Transform.from_quaternion(q, convention=convention)
+        return cls(rotation=transform.rotation)
+
+    @classmethod
+    def from_axis_angle(
+        cls,
+        axis: np.ndarray | list | tuple,
+        angle: float,
+    ) -> Rotation:
+        """Create a Rotation from an axis-angle representation.
+
+        See :meth:`Transform.from_axis_angle` for full documentation.
+
+        Args:
+            axis: 3-element rotation axis (auto-normalized).
+            angle: Rotation angle in radians.
+
+        Returns:
+            Rotation: A rotation-only transform.
+        """
+        transform = Transform.from_axis_angle(axis, angle)
+        return cls(rotation=transform.rotation)
 
 
 class Identity(Transform):

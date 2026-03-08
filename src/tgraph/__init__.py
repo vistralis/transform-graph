@@ -8,7 +8,7 @@
 It provides strict-typed handling of SE(3) rigid body transformations, camera and
 orthographic projections, and a frame graph for automatic path composition.
 
-**Target Environment:** Python 3.12+, NumPy 2.0+.
+**Target Environment:** Python 3.10+, NumPy 2.0+.
 
 ---
 
@@ -23,6 +23,18 @@ orthographic projections, and a frame graph for automatic path composition.
 | `Rotation` | Pure rotation (zero translation) |
 | `Identity` | Neutral element — composes with anything and returns the other operand |
 | `MatrixTransform` | Generic 4×4 homogeneous matrix (fallback for mixed compositions) |
+
+**Convenience constructors** on `Transform` and `Rotation`::
+
+    Transform.from_rotation_matrix(R, t=None, validate=True)
+    Transform.from_quaternion(q, t=None, convention="wxyz")
+    Transform.from_axis_angle(axis, angle, t=None)
+
+### Quaternion Interop (`tgraph.quaternion`)
+
+Conversion between numpy-quaternion (wxyz), scipy Rotation, and raw arrays::
+
+    from tgraph.quaternion import to_xyzw, from_xyzw, to_scipy, from_scipy, normalize
 
 ### Projections (3D → 2D)
 
