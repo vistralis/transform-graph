@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-03-10
+
+### Added
+- `Transform.from_rotation_matrix()` with SO(3) validation.
+- `Transform.from_quaternion()` with wxyz/xyzw convention support and auto-normalization.
+- `Transform.from_axis_angle()` using Rodrigues formula.
+- Corresponding `Rotation.from_rotation_matrix()`, `from_quaternion()`, `from_axis_angle()`.
+- `tgraph.quaternion` interop module: `to_xyzw`, `from_xyzw`, `to_wxyz`, `from_wxyz`, `to_scipy`, `from_scipy`, `normalize`.
+- 43 new tests across `test_convenience_constructors.py` and `test_quaternion_interop.py`.
+
+### Changed
+- Renamed `from_euler_angles` → `from_roll_pitch_yaw` and `as_euler_angles` → `as_roll_pitch_yaw` for explicit convention clarity.
+- Euler angle conversion now uses `scipy.spatial.transform.Rotation` internally for robustness.
+- Lowered `requires-python` from `>=3.12` to `>=3.10`.
+- CI matrix expanded: Python 3.10–3.14 × x86_64 + aarch64.
+- Fixed Python 3.10 compatibility: `datetime.UTC` → `datetime.timezone.utc`.
+
 ## [0.1.1] — 2026-03-05
 
 ### Added
